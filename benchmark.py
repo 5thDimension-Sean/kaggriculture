@@ -90,6 +90,24 @@ def benchmark(agent_a, agent_b, name_a, name_b, n_games=20):
     return wins_a, wins_b, ties, mean_a, mean_b
 
 
+def sanity_check(agent_b, name_b):
+    """Run 3 steps with agent_b and print what it returns, so we can confirm it's acting."""
+    from kaggle_environments import make
+    env = make("kaggriculture", configuration={"episodeSteps": 3}, debug=False)
+    results = []
+
+    def spy(obs):
+        action = agent_b(obs)
+        results.append(action)
+        return action
+
+    env.run(["random", spy])
+    print(f"\n[sanity] {name_b} first 3 actions:")
+    for i, a in enumerate(results):
+        print(f"  step {i}: farmer={a.get('farmer')}  market={a.get('market', [])[:2]}")
+    print()
+
+
 def main():
     ap = argparse.ArgumentParser(description="20-game head-to-head benchmark")
     ap.add_argument("--a", default="main.py",    help="Agent A file (default: main.py)")
@@ -114,6 +132,7 @@ def main():
     name_a = os.path.splitext(os.path.basename(path_a))[0]
     name_b = os.path.splitext(os.path.basename(path_b))[0]
 
+    sanity_check(agent_b, name_b)
     benchmark(agent_a, agent_b, name_a, name_b, n_games=args.n)
 
 
