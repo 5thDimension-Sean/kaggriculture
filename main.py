@@ -1,12 +1,14 @@
-"""Kaggriculture agent — MapleLeaf 5.0
+"""Kaggriculture agent — MapleLeaf 4.1
 Route:   v22 roma (ep 90473746, 2026-08-07) — freshest top-30 submission
 Market:  price-impact SELL sort + NPC-demand persistence weighting
          + price-gate (skip sells when prices are crashed >80% below base)
          + Town-Center-phase-aware terminal liquidation
          + NPC-threat-weighted opponent exposure
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
+BC:      train_bc.py trains a PolicyNet from 100 top-player replay JSONs;
+         weights_bc.npz can warm-start RL or replace the route for navigation.
 
-MapleLeaf 5.0 vs 4.0 changes (validated by benchmark):
+MapleLeaf 4.1 vs 4.0 changes (validated by benchmark):
   - Removed _spread_premium_sells: it capped route sell orders causing items
     to pile up in shed and overflow, losing ~27k coins per game.
   - Removed _pre_terminal_market: it added early sells on days 27-28 that
@@ -15,6 +17,7 @@ MapleLeaf 5.0 vs 4.0 changes (validated by benchmark):
     20% of base price (e.g. STRAWBERRY < $24), unless day >= 28 or shed > 90.
     High-NPC items recover quickly; gating prevents selling at floor prices.
     Benchmark: +3 wins per 20 games vs master (65% combined win rate).
+  - Added train_bc.py: behavioral cloning trainer for 100 replay JSONs.
 """
 import base64
 import copy
