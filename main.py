@@ -1,20 +1,23 @@
-"""Kaggriculture agent — monster v3
+"""Kaggriculture agent — MapleLeaf 4.2
 Route:   v22 roma (ep 90473746, 2026-08-07) — freshest top-30 submission
-Market:  price-impact SELL sort + NPC-demand persistence weighting (v3)
-         + Town-Center-phase-aware terminal liquidation (v3)
-         + NPC-threat-weighted opponent exposure (v3)
+Market:  price-impact SELL sort + NPC-demand persistence weighting
+         + opponent-weighted impact sort (contested items sell first)
+         + premium-shift look-ahead (v13-R3 technique)
+         + Town-Center-phase-aware terminal liquidation
+         + NPC-threat-weighted opponent exposure
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
+BC:      train_bc.py trains a PolicyNet from 100 top-player replay JSONs;
+         weights_bc.npz can warm-start RL or replace the route for navigation.
 
-v3 vs v2 improvements (validated across notebooks):
-  - _impact_score: low-NPC-demand items (MELON, FERTILIZER) get a persistence
-    bonus so they sort first when raw price-impact is similar — their price
-    drop is permanent, high-demand items (WHEAT, STRAWBERRY) recover naturally.
-  - _terminal_market: adds a no-recovery urgency factor per item (day-phase
-    aware: Town Center consumes 4x after day 20, 2x after day 10) so items
-    with no NPC demand are liquidated before items that will recover.
-  - _opponent_exposure: weights opponent production by NPC threat — items the
-    opponent grows that have no NPC recovery (MELON, FERTILIZER) are more
-    dangerous to glut, so they count for more in the terminal sort score.
+MapleLeaf 4.2 vs 4.1 changes (validated by benchmark):
+  - Premium shift (v13-R3): look one step ahead in route; advance-sell
+    MILK/WOOL/MELON/STRAWBERRY one step early when farms are converged
+    (clone distance <= 8). Active steps 120-680. +$5,015/game vs 4.1.
+  - Remove price gate: 4.1 skipped sells below 20% of base price, stranding
+    inventory in price-crash games. Removed entirely.
+  - Opponent-weighted impact sort: contested products (opponent has many of
+    same animal) get higher sort priority — race to market before opponent
+    floods price. _impact_score now accepts opponent_exposure kwarg.
 """
 import base64
 import copy
@@ -52,27 +55,53 @@ _GLUT_WEIGHT = {
 
 _WEED_STATE = {0: {}, 1: {}}
 
-# ── NPC demand data (from Yummers notebook analysis) ──────────────────────────
-# Units consumed per 4-turn market tick at base rate (day 0-10).
-# Town Center doubles at day 10 (2×) and quadruples at day 20 (4×).
-# FERTILIZER and MELON have near-zero NPC demand — price drops are permanent.
-_NPC_PER_4_TICK = {
-    "WHEAT":       5.0,   # Bakery+Pizza+Brunch+IceCream+FarmersMarket
-    "CARROT":      3.0,   # PetCafe(2)+FarmersMarket
-    "TOMATO":      2.0,   # Pizza+FarmersMarket
-    "STRAWBERRY":  4.0,   # Brunch+IceCream+Smoothie+FarmersMarket
-    "MELON":       0.33,  # Town Center only (every 12 turns baseline)
-    "EGG":         2.0,   # Bakery+Brunch
-    "MILK":        3.0,   # Pizza+IceCream+Smoothie
-    "WOOL":        2.0,   # YarnStore(2)
-    "FERTILIZER":  0.0,   # no NPC demand at all
+# ── NPC demand data ────────────────────────────────────────────────────────────
+# Town center consumes 1 of each product (excl. FERTILIZER) per 12 turns.
+# After day 10 → 2/12t, after day 20 → 4/12t.
+# Shops each consume their products every 4 turns when unlocked.
+_TC_BASE_PER_4 = 1.0 / 3.0  # 1 unit per 12 turns expressed as per-4-turn rate
+
+# Per-shop demand per 4-turn tick (matches borg.md shop table)
+_SHOP_DEMAND = {
+    "BAKERY":         {"EGG": 1.0, "WHEAT": 1.0},
+    "PIZZA_SHOP":     {"MILK": 1.0, "TOMATO": 1.0, "WHEAT": 1.0},
+    "BRUNCH_SPOT":    {"EGG": 1.0, "WHEAT": 1.0, "STRAWBERRY": 1.0},
+    "YARN_STORE":     {"WOOL": 2.0},
+    "ICE_CREAM_SHOP": {"STRAWBERRY": 1.0, "MILK": 1.0, "WHEAT": 1.0},
+    "PET_CAFE":       {"CARROT": 2.0},
+    "SMOOTHIE_SHOP":  {"STRAWBERRY": 1.0, "MILK": 1.0},
+    "FARMERS_MARKET": {"WHEAT": 1.0, "CARROT": 1.0, "TOMATO": 1.0, "STRAWBERRY": 1.0},
 }
 
+# Maximum possible shop demand (all shops unlocked) — used as fallback
+_MAX_SHOP_DEMAND = {}
+for _sd in _SHOP_DEMAND.values():
+    for _k, _v in _sd.items():
+        _MAX_SHOP_DEMAND[_k] = _MAX_SHOP_DEMAND.get(_k, 0.0) + _v
 
-def _npc_eff(item, day):
-    """Effective NPC demand per 4 turns, scaled by Town Center phase."""
-    tc = 4.0 if day >= 20 else (2.0 if day >= 10 else 1.0)
-    return _NPC_PER_4_TICK.get(item, 1.0) * tc
+
+def _npc_eff(item, day, obs=None):
+    """Effective NPC demand per 4 turns.
+
+    Uses actual unlocked shop state from obs when available.
+    Correctly separates shop demand (static) from Town Center (scales with day).
+    """
+    if item == "FERTILIZER":
+        return 0.0
+    # Town center component — scales with day phase
+    tc_mult = 4.0 if day >= 20 else (2.0 if day >= 10 else 1.0)
+    tc = _TC_BASE_PER_4 * tc_mult
+    # Shop component — sum over unlocked shops
+    if obs is not None:
+        town = _get(obs, "town", {}) or {}
+        unlocked = set(_get(town, "unlocked_shops", []) or [])
+        shop = sum(
+            _SHOP_DEMAND[s].get(item, 0.0)
+            for s in unlocked if s in _SHOP_DEMAND
+        )
+    else:
+        shop = _MAX_SHOP_DEMAND.get(item, 0.0)
+    return tc + shop
 
 
 def _get(value, key, default=None):
@@ -287,15 +316,17 @@ def _market_price(item, inventory):
     return max(_PRICE_FLOOR, int(round(price)))
 
 
-def _impact_score(obs, order):
-    """Coins lost to price impact × NPC-demand persistence bonus.
+def _impact_score(obs, order, opponent_exposure=None):
+    """Coins lost to price impact × NPC-demand persistence bonus × opponent threat.
 
     Items whose price drop is permanent (low NPC demand, e.g. MELON,
     FERTILIZER) receive a small boost so they sort first when raw impact is
     similar — their market damage accumulates across turns, whereas high-demand
     items (WHEAT, STRAWBERRY) naturally recover between turns.
     Max bonus is 10 % (persistence=1.0 → factor 1.10, WHEAT at day 20+ → 1.00).
-    This is a principled tiebreaker, not a major reorder.
+
+    When opponent_exposure is provided, items the opponent also produces get a
+    further 20 % boost per unit of threat — race to market before they flood.
     """
     if not _is_sell(order):
         return float("-inf")
@@ -313,18 +344,24 @@ def _impact_score(obs, order):
     price_impact = float(quantity) * max(0.0, cur_quote - later_q)
 
     day         = int(_get(obs, "day", 0) or 0)
-    npc         = _npc_eff(item, day)
+    npc         = _npc_eff(item, day, obs)
     # persistence in (0.05, 1.0]: FERTILIZER→1.0, WHEAT@day20→~0.05
     persistence = 1.0 / (1.0 + npc)
-    return price_impact * (1.0 + 0.10 * persistence)
+    base_score  = price_impact * (1.0 + 0.10 * persistence)
+    threat      = float((opponent_exposure or {}).get(item, 0.0))
+    return base_score * (1.0 + 0.20 * threat)
 
 
-def _impact_slots(obs, action):
-    """Move SELL slots with highest self-price-impact to execute first."""
+def _impact_slots(obs, action, opponent_exposure=None):
+    """Move SELL slots with highest self-price-impact to execute first.
+
+    When opponent_exposure is provided it is forwarded to _impact_score so
+    contested products receive a sort-priority boost.
+    """
     action = _copy_action(action)
     market = list(action.get("market") or [])
     rows   = [
-        (_impact_score(obs, o), -i, list(o))
+        (_impact_score(obs, o, opponent_exposure=opponent_exposure), -i, list(o))
         for i, o in enumerate(market)
         if _is_sell(o)
     ]
@@ -357,10 +394,10 @@ def _opponent_exposure(obs):
             product = _PRODUCT_BY_ANIMAL.get(str(tile.get("animal", "")).upper())
             yield_u = float(tile.get("yield_units", 0) or 0)
             if crop in exposure:
-                threat_w            = 1.0 / (1.0 + _npc_eff(crop, day) * 0.1)
+                threat_w            = 1.0 / (1.0 + _npc_eff(crop, day, obs) * 0.1)
                 exposure[crop]     += threat_w * max(1.0, yield_u)
             if product:
-                threat_w            = 1.0 / (1.0 + _npc_eff(product, day) * 0.1)
+                threat_w            = 1.0 / (1.0 + _npc_eff(product, day, obs) * 0.1)
                 exposure[product]  += threat_w * (1.0 + max(0.0, yield_u))
             if tile.get("fertilizer_available", False):
                 exposure["FERTILIZER"] += 1.0   # FERTILIZER has 0 NPC → threat_w=1.0
@@ -388,7 +425,7 @@ def _terminal_market(obs, action):
         quantity = max(0, int(shed.get(item, 0) or 0))
         if quantity <= 0:
             continue
-        npc_urgency = 1.0 / (1.0 + _npc_eff(item, day) * 0.08)
+        npc_urgency = 1.0 / (1.0 + _npc_eff(item, day, obs) * 0.08)
         score = (
             (1.0 + exposure.get(item, 0.0))
             * _GLUT_WEIGHT.get(item, 1.0)
@@ -402,26 +439,113 @@ def _terminal_market(obs, action):
     return action
 
 
+_BASE_PRICES = {
+    "STRAWBERRY": 120, "MELON": 250, "MILK": 160, "WOOL": 200,
+    "EGG": 50, "TOMATO": 60, "CARROT": 35, "WHEAT": 25, "FERTILIZER": 100,
+}
+_PRICE_GATE_THRESH = 0.20   # skip sell if current price < 20% of base
+_PRICE_GATE_FORCE_DAY = 28  # always sell in last two days regardless of price
+_PRICE_GATE_SHED_LIMIT = 90 # bypass gate if shed is near capacity
+
+
+def _price_gate_sells(obs, action):
+    """Skip SELL orders where price has crashed >80% below base, unless late game
+    or shed near capacity.  High-NPC items (STRAWBERRY, WHEAT) recover fast so
+    holding a few turns gains significant price.  Gate is conservative (20%
+    threshold) to avoid interfering with the route's normal sell timing."""
+    action = _copy_action(action)
+    day = int(_get(obs, "day", 0) or 0)
+    if day >= _PRICE_GATE_FORCE_DAY:
+        return action
+    shed = _projected_shed(obs, action)
+    if sum(shed.values()) > _PRICE_GATE_SHED_LIMIT:
+        return action
+    prices = _get(_get(obs, "market", {}) or {}, "prices", {}) or {}
+    market = []
+    for raw in list(action.get("market", []) or []):
+        order = list(raw)
+        if len(order) >= 3 and order[0] == "SELL" and order[1] in _BASE_PRICES:
+            item = order[1]
+            cur_price = float(prices.get(item, _BASE_PRICES[item]) or 1)
+            if cur_price < _BASE_PRICES[item] * _PRICE_GATE_THRESH:
+                continue  # price floor-crashed; NPC demand will recover it
+        market.append(order)
+    action["market"] = market
+    return action
+
+
+_PREMIUM_ITEMS   = frozenset(("STRAWBERRY", "MELON", "MILK", "WOOL"))
+_PREMIUM_WINDOW  = (120, 680)
+_PREMIUM_MAX_QTY = 30
+
+
+def _farm_fingerprint(farm):
+    counts = {}
+    for row in (_get(farm, "tiles", []) or []):
+        for tile in (row if isinstance(row, list) else [row]):
+            if not isinstance(tile, dict):
+                continue
+            a = str(tile.get("animal", "") or "").upper()
+            c = str(tile.get("crop",   "") or "").upper()
+            if a: counts[a] = counts.get(a, 0) + 1
+            if c: counts[c] = counts.get(c, 0) + 1
+    return counts
+
+
+def _clone_distance(fp_a, fp_b):
+    keys = set(fp_a) | set(fp_b)
+    return sum(abs(fp_a.get(k, 0) - fp_b.get(k, 0)) for k in keys)
+
+
+def _premium_shift(obs, action, step):
+    """Advance-sell premium items one step early when farms are converged (clone dist ≤ 8)."""
+    if not (_PREMIUM_WINDOW[0] <= step < _PREMIUM_WINDOW[1]):
+        return action
+    if step + 1 >= len(_ACTIONS):
+        return action
+    seat     = _seat(obs)
+    farms    = list(_get(obs, "farms", []) or [])
+    my_farm  = _farm(obs, seat)
+    opp_farm = farms[1 - seat] if len(farms) >= 2 else {}
+    if _clone_distance(_farm_fingerprint(my_farm), _farm_fingerprint(opp_farm)) > 8:
+        return action
+    next_market = list((_ACTIONS[step + 1].get("market") or []))
+    shed = _get(_get(obs, "private", {}) or {}, "shed", {}) or {}
+    current_sells = {
+        str(o[1]) for o in (action.get("market") or [])
+        if isinstance(o, list) and len(o) >= 2 and o[0] == "SELL"
+    }
+    action = _copy_action(action)
+    market = list(action.get("market") or [])
+    for order in next_market:
+        if not (isinstance(order, list) and len(order) >= 3 and order[0] == "SELL"):
+            continue
+        item = str(order[1])
+        if item not in _PREMIUM_ITEMS or item in current_sells:
+            continue
+        next_qty = max(0, int(order[2]))
+        shed_qty = max(0, int(shed.get(item, 0) or 0))
+        advance  = min(_PREMIUM_MAX_QTY, shed_qty, next_qty // 2)
+        if advance <= 0:
+            continue
+        market.append(["SELL", item, advance])
+        current_sells.add(item)
+    action["market"] = market
+    return action
+
+
 def agent(obs):
     try:
-        step = min(max(0, int(_get(obs, "step", 0) or 0)), len(_ACTIONS) - 1)
-
-        # 1. Fresh v22 route with 8-step weed repair
-        action = _weed_repair_action(obs, _copy_action(_ACTIONS[step]), _ACTIONS, step)
-
-        # 2. Clamp SELL quantities to actual shed inventory
-        action = _safe_market(obs, action)
-
-        # 3. Sort SELL slots: highest self-damage goes first to minimise price impact
-        action = _impact_slots(obs, action)
-
-        # 4. Final safety clamp after sort
-        action = _safe_market(obs, action)
-
-        # 5. Terminal step: liquidate everything weighted by opponent exposure
+        step     = min(max(0, int(_get(obs, "step", 0) or 0)), len(_ACTIONS) - 1)
+        action   = _weed_repair_action(obs, _copy_action(_ACTIONS[step]), _ACTIONS, step)
+        action   = _safe_market(obs, action)
+        action   = _premium_shift(obs, action, step)
+        action   = _safe_market(obs, action)
+        exposure = _opponent_exposure(obs)
+        action   = _impact_slots(obs, action, opponent_exposure=exposure)
+        action   = _safe_market(obs, action)
         if step == len(_ACTIONS) - 1:
             action = _terminal_market(obs, action)
-
         return _align_hands(action, obs)
     except Exception:
         farm = _farm(obs, _seat(obs))
