@@ -20,7 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 def load_agent(path):
     """Load an agent function from a .py file."""
     path = os.path.abspath(path)
-    ns = {}
+    # Inject __file__ so agents can resolve sibling files (e.g. weights_bc.npz)
+    ns = {"__file__": path}
     with open(path) as f:
         exec(compile(f.read(), path, "exec"), ns)
     if "agent" not in ns:

@@ -13,7 +13,10 @@ import sys
 
 import numpy as np
 
-_HERE = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
+try:
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _HERE = os.getcwd()
 sys.path.insert(0, _HERE)
 from model import encode_obs, ACTIONS, PolicyNet
 
@@ -462,7 +465,9 @@ def agent(obs):
 
         return _align_hands(action, obs)
 
-    except Exception:
+    except Exception as _e:
+        import traceback
+        traceback.print_exc()
         farm = _farm(obs, _seat(obs))
         return {
             "farmer": ["PASS"],
