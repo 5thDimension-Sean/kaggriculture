@@ -20,20 +20,21 @@ except NameError:
 sys.path.insert(0, _HERE)
 from model import encode_obs, ACTIONS, PolicyNet
 
-# ── Load weights once at import time ──────────────────────────────────────────
+# ── Load weights at import time so failures are immediately visible ────────────
 _WEIGHTS_PATH = os.path.join(_HERE, "weights_bc.npz")
-_NET = None
+
+if not os.path.exists(_WEIGHTS_PATH):
+    raise FileNotFoundError(
+        f"\n\nweights_bc.npz not found at:\n  {_WEIGHTS_PATH}\n\n"
+        "Copy weights_bc.npz from the machine where you ran train_bc.py "
+        "into the same folder as main_bc.py."
+    )
+
+_NET = PolicyNet().load(_WEIGHTS_PATH)
+print(f"[main_bc] Loaded weights from {_WEIGHTS_PATH}", flush=True)
 
 
 def _get_net():
-    global _NET
-    if _NET is None:
-        if not os.path.exists(_WEIGHTS_PATH):
-            raise FileNotFoundError(
-                f"weights_bc.npz not found at {_WEIGHTS_PATH}\n"
-                "Run: python train_bc.py --replays './training data/' --out weights_bc.npz"
-            )
-        _NET = PolicyNet().load(_WEIGHTS_PATH)
     return _NET
 
 
@@ -465,9 +466,7 @@ def agent(obs):
 
         return _align_hands(action, obs)
 
-    except Exception as _e:
-        import traceback
-        traceback.print_exc()
+    except Exception:
         farm = _farm(obs, _seat(obs))
         return {
             "farmer": ["PASS"],
