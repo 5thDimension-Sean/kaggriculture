@@ -91,9 +91,29 @@ def benchmark(agent_a, agent_b, name_a, name_b, n_games=20):
 
 
 def sanity_check(agent_b, name_b):
-    """Run 3 steps with agent_b and print what it returns, so we can confirm it's acting."""
+    """Run 3 steps with agent_b and verify the network is working."""
+    import numpy as np
     from kaggle_environments import make
-    env = make("kaggriculture", configuration={"episodeSteps": 3}, debug=False)
+
+    # ── Check network weights ───────────────────────────────────────────────
+    globs = getattr(agent_b, "__globals__", {})
+    net = globs.get("_NET")
+    if net is not None:
+        w1_norm = float(np.linalg.norm(net.W1))
+        bp = net.bp
+        print(f"\n[sanity] W1 weight norm : {w1_norm:.2f}  (expect > 10)")
+        print(f"[sanity] output bias bp : {[round(float(v),2) for v in bp]}")
+        # Probe with zero and random inputs
+        zero_logits = net.forward(np.zeros(82, dtype=np.float32))
+        rand_logits = net.forward(np.random.randn(82).astype(np.float32))
+        print(f"[sanity] argmax(zero input)   = {int(np.argmax(zero_logits))}")
+        print(f"[sanity] argmax(random input) = {int(np.argmax(rand_logits))}")
+        print(f"[sanity] top-5 logits (zero input): {sorted(enumerate(zero_logits), key=lambda x:-x[1])[:5]}")
+    else:
+        print("[sanity] WARNING: could not access _NET from agent globals")
+
+    # ── Sample 3 actual game steps ──────────────────────────────────────────
+    env = make("kaggriculture", configuration={"episodeSteps": 4}, debug=False)
     results = []
 
     def spy(obs):
@@ -101,8 +121,8 @@ def sanity_check(agent_b, name_b):
         results.append(action)
         return action
 
-    env.run(["random", spy])
-    print(f"\n[sanity] {name_b} first 3 actions:")
+    env.run([spy, "random"])
+    print(f"\n[sanity] {name_b} first {len(results)} actions (as P0):")
     for i, a in enumerate(results):
         print(f"  step {i}: farmer={a.get('farmer')}  market={a.get('market', [])[:2]}")
     print()
