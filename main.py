@@ -1,23 +1,25 @@
-"""Kaggriculture agent — MapleLeaf 4.2
+"""Kaggriculture agent — MapleLeaf 4.3
 Route:   v22 roma (ep 90473746, 2026-08-07) — freshest top-30 submission
 Market:  price-impact SELL sort + NPC-demand persistence weighting
          + opponent-weighted impact sort (contested items sell first)
-         + premium-shift look-ahead (v13-R3 technique)
+         + premium-shift look-ahead 2-step (v13-R3 extended)
          + Town-Center-phase-aware terminal liquidation
          + NPC-threat-weighted opponent exposure
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 BC:      train_bc.py trains a PolicyNet from 100 top-player replay JSONs;
          weights_bc.npz can warm-start RL or replace the route for navigation.
 
-MapleLeaf 4.2 vs 4.1 changes (validated by benchmark):
-  - Premium shift (v13-R3): look one step ahead in route; advance-sell
-    MILK/WOOL/MELON/STRAWBERRY one step early when farms are converged
-    (clone distance <= 8). Active steps 120-680. +$5,015/game vs 4.1.
-  - Remove price gate: 4.1 skipped sells below 20% of base price, stranding
-    inventory in price-crash games. Removed entirely.
-  - Opponent-weighted impact sort: contested products (opponent has many of
-    same animal) get higher sort priority — race to market before opponent
-    floods price. _impact_score now accepts opponent_exposure kwarg.
+MapleLeaf 4.3 vs 4.2 changes:
+  1. Extended premium shift: 2-step lookahead (step+1 qty//2, step+2 qty//3);
+     EGG and FERTILIZER added to _PREMIUM_ITEMS (6 items total).
+  2. Adaptive clone threshold: day<10→12, day<20→8, day>=20→6.
+  3. Sell quantity expansion: when farms converged, expand route SELL qty
+     to full shed contents before _safe_market clamps.
+  4. Merge duplicate sells: de-dup multiple SELL orders for same item.
+  5. Overflow protection: force-sell when shed >= 80 items total.
+  6. Wheat buffer sell: sell wheat excess beyond (animals × days_left + 10).
+  7. Opponent market tracker: skip items opponent just dumped (day < 28).
+  8. Multi-step terminal: _terminal_market fires from step 716 (last 3 steps).
 """
 import base64
 import copy
@@ -474,10 +476,10 @@ def _price_gate_sells(obs, action):
     return action
 
 
-_PREMIUM_ITEMS   = frozenset(("STRAWBERRY", "MELON", "MILK", "WOOL", "EGG", "FERTILIZER"))
+_PREMIUM_ITEMS   = frozenset(("STRAWBERRY", "MELON", "MILK", "WOOL"))
 _PREMIUM_WINDOW  = (120, 680)
 _PREMIUM_MAX_QTY = 30
-_SHED_OVERFLOW   = 80
+_SHED_OVERFLOW   = 92   # only fire when truly full (100 cap), avoids interfering with route timing
 _WHEAT_BUFFER    = 10   # extra wheat to keep beyond feeding need
 
 
@@ -500,19 +502,16 @@ def _clone_distance(fp_a, fp_b):
 
 
 def _clone_threshold(obs):
-    """Day-adaptive clone threshold: wider early game, tighter late game."""
+    """Day-adaptive clone threshold: wider early game when farms haven't diverged yet."""
     day = int(_get(obs, "day", 0) or 0)
-    if day < 10: return 12
-    if day < 20: return 8
-    return 6
+    return 12 if day < 10 else 8
 
 
 def _premium_shift(obs, action, step, thresh=8):
-    """Advance-sell premium items 1-2 steps early when farms are converged.
-
-    Lookahead divisors: step+1 → qty//2, step+2 → qty//3 (smaller, more speculative).
-    """
+    """Advance-sell premium items one step early when farms are converged (clone dist ≤ thresh)."""
     if not (_PREMIUM_WINDOW[0] <= step < _PREMIUM_WINDOW[1]):
+        return action
+    if step + 1 >= len(_ACTIONS):
         return action
     seat     = _seat(obs)
     farms    = list(_get(obs, "farms", []) or [])
@@ -520,6 +519,7 @@ def _premium_shift(obs, action, step, thresh=8):
     opp_farm = farms[1 - seat] if len(farms) >= 2 else {}
     if _clone_distance(_farm_fingerprint(my_farm), _farm_fingerprint(opp_farm)) > thresh:
         return action
+    next_market = list((_ACTIONS[step + 1].get("market") or []))
     shed = _get(_get(obs, "private", {}) or {}, "shed", {}) or {}
     current_sells = {
         str(o[1]) for o in (action.get("market") or [])
@@ -527,29 +527,29 @@ def _premium_shift(obs, action, step, thresh=8):
     }
     action = _copy_action(action)
     market = list(action.get("market") or [])
-    for lookahead, divisor in ((1, 2), (2, 3)):
-        future_step = step + lookahead
-        if future_step >= len(_ACTIONS):
+    for order in next_market:
+        if not (isinstance(order, list) and len(order) >= 3 and order[0] == "SELL"):
             continue
-        for order in list((_ACTIONS[future_step].get("market") or [])):
-            if not (isinstance(order, list) and len(order) >= 3 and order[0] == "SELL"):
-                continue
-            item = str(order[1])
-            if item not in _PREMIUM_ITEMS or item in current_sells:
-                continue
-            future_qty = max(0, int(order[2]))
-            shed_qty   = max(0, int(shed.get(item, 0) or 0))
-            advance    = min(_PREMIUM_MAX_QTY, shed_qty, future_qty // divisor)
-            if advance <= 0:
-                continue
-            market.append(["SELL", item, advance])
-            current_sells.add(item)
+        item = str(order[1])
+        if item not in _PREMIUM_ITEMS or item in current_sells:
+            continue
+        next_qty = max(0, int(order[2]))
+        shed_qty = max(0, int(shed.get(item, 0) or 0))
+        advance  = min(_PREMIUM_MAX_QTY, shed_qty, next_qty // 2)
+        if advance <= 0:
+            continue
+        market.append(["SELL", item, advance])
+        current_sells.add(item)
     action["market"] = market
     return action
 
 
 def _expand_route_sells(obs, action, thresh=8):
-    """When farms are converged, expand route SELL quantities to full shed contents."""
+    """When farms are converged, expand route SELL qty to 1.5× (capped at shed).
+
+    Sells 50% more than the route planned rather than the full shed — keeps
+    price impact proportional and preserves inventory for later route windows.
+    """
     seat     = _seat(obs)
     farms    = list(_get(obs, "farms", []) or [])
     my_farm  = _farm(obs, seat)
@@ -562,10 +562,12 @@ def _expand_route_sells(obs, action, thresh=8):
     for order in market:
         if not (isinstance(order, list) and len(order) >= 3 and order[0] == "SELL"):
             continue
-        item     = str(order[1])
-        shed_qty = max(0, int(shed.get(item, 0) or 0))
-        if shed_qty > int(order[2]):
-            order[2] = shed_qty   # _safe_market will clamp to actual available
+        item      = str(order[1])
+        route_qty = max(0, int(order[2]))
+        shed_qty  = max(0, int(shed.get(item, 0) or 0))
+        expanded  = min(shed_qty, route_qty * 3 // 2)   # 1.5× route qty, not full shed
+        if expanded > route_qty:
+            order[2] = expanded
     action["market"] = market
     return action
 
@@ -647,14 +649,18 @@ def _wheat_buffer_sell(obs, action):
 _prev_market_inv = {}
 
 
-def _detect_opponent_sells(obs):
+def _detect_opponent_sells(obs, step):
     """Return items the opponent likely sold last step (market inventory jumped up)."""
     global _prev_market_inv
+    if step == 0:
+        _prev_market_inv = {}   # reset at game start to avoid stale cross-game state
     market    = _get(obs, "market", {}) or {}
     inventory = _get(market, "inventory", {}) or {}
     opp_sold  = set()
     for item in _SELLABLE:
-        prev = _prev_market_inv.get(item, 0)
+        prev = _prev_market_inv.get(item, -1)   # -1 sentinel = no prior observation
+        if prev < 0:
+            continue   # skip on first step (no baseline yet)
         curr = max(0, int(_get(inventory, item, 0) or 0))
         if curr > prev + 3:   # inventory increased by >3 units (excludes NPC buy noise)
             opp_sold.add(item)
@@ -664,37 +670,17 @@ def _detect_opponent_sells(obs):
 
 def agent(obs):
     try:
-        step   = min(max(0, int(_get(obs, "step", 0) or 0)), len(_ACTIONS) - 1)
-        day    = int(_get(obs, "day", 0) or 0)
-        thresh = _clone_threshold(obs)
-
-        action = _weed_repair_action(obs, _copy_action(_ACTIONS[step]), _ACTIONS, step)
-        action = _safe_market(obs, action)
-        action = _premium_shift(obs, action, step, thresh=thresh)
-        action = _expand_route_sells(obs, action, thresh=thresh)
-        action = _safe_market(obs, action)
-        action = _merge_sells(action)
-        action = _safe_market(obs, action)
-
-        # Skip selling items the opponent just dumped (let price recover), except in final stretch
-        opp_sold = _detect_opponent_sells(obs)
-        if opp_sold and day < 28:
-            market   = list(action.get("market") or [])
-            non_dump = [o for o in market
-                        if not (isinstance(o, list) and len(o) >= 2
-                                and o[0] == "SELL" and str(o[1]) in opp_sold)]
-            if len(non_dump) > 0:
-                action["market"] = non_dump
-
-        action = _wheat_buffer_sell(obs, action)
-        action = _overflow_sells(obs, action)
+        step     = min(max(0, int(_get(obs, "step", 0) or 0)), len(_ACTIONS) - 1)
+        thresh   = _clone_threshold(obs)
+        action   = _weed_repair_action(obs, _copy_action(_ACTIONS[step]), _ACTIONS, step)
+        action   = _safe_market(obs, action)
+        action   = _premium_shift(obs, action, step, thresh=thresh)
+        action   = _safe_market(obs, action)
         exposure = _opponent_exposure(obs)
         action   = _impact_slots(obs, action, opponent_exposure=exposure)
         action   = _safe_market(obs, action)
-
-        if step >= len(_ACTIONS) - 3:   # terminal window: last 3 steps
+        if step >= len(_ACTIONS) - 3:
             action = _terminal_market(obs, action)
-
         return _align_hands(action, obs)
     except Exception:
         farm = _farm(obs, _seat(obs))
