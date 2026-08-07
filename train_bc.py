@@ -39,16 +39,22 @@ from model import encode_obs, ACTIONS, OBS_DIM, N_ACTIONS, PolicyNet
 # serialises integers (e.g. the "5" in PICKUP WHEAT 5) as strings.
 _EXACT = {tuple(str(x) for x in a): i for i, a in enumerate(ACTIONS)}
 
-_PICKUP_IDX = next(i for i, a in enumerate(ACTIONS) if a[0] == "PICKUP")
+# Actions whose base verb always maps to a fixed index regardless of extra args.
+# PICKUP: any item/qty → index 18 (PICKUP WHEAT 5 approximation)
+# FEED: 'FEED WHEAT' appears in replays but our ACTIONS only has bare 'FEED'
+_VERB_FALLBACK = {
+    a[0]: i
+    for i, a in enumerate(ACTIONS)
+    if a[0] in ("PICKUP", "FEED")
+}
 
 
 def _farmer_to_idx(farmer):
     """Map a replay farmer action list → ACTIONS index, or None to skip.
 
-    Exact match is tried first. Any PICKUP maps to index 18 (PICKUP WHEAT 5)
-    as an approximation — top players pick up various items but the model only
-    needs to learn 'go to shed and pick up'. PLACE (animal placement) and HIRE
-    are not in ACTIONS and are skipped.
+    Exact match is tried first. PICKUP and FEED with any extra arguments
+    (e.g. ['FEED', 'WHEAT'], ['PICKUP', 'SHEEP', 1]) fall back to the base
+    verb index. PLACE and HIRE are not in ACTIONS and are skipped.
     """
     if isinstance(farmer, str):
         farmer = [farmer]
@@ -60,8 +66,9 @@ def _farmer_to_idx(farmer):
 
     if key in _EXACT:
         return _EXACT[key]
-    if norm[0] == "PICKUP":
-        return _PICKUP_IDX
+    base = norm[0]
+    if base in _VERB_FALLBACK:
+        return _VERB_FALLBACK[base]
     return None   # PLACE, HIRE, etc. — skip
 
 
