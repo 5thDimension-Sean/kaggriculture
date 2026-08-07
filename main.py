@@ -474,9 +474,11 @@ def _price_gate_sells(obs, action):
     return action
 
 
-_PREMIUM_ITEMS   = frozenset(("STRAWBERRY", "MELON", "MILK", "WOOL"))
+_PREMIUM_ITEMS   = frozenset(("STRAWBERRY", "MELON", "MILK", "WOOL", "EGG", "FERTILIZER"))
 _PREMIUM_WINDOW  = (120, 680)
 _PREMIUM_MAX_QTY = 30
+_SHED_OVERFLOW   = 80
+_WHEAT_BUFFER    = 10   # extra wheat to keep beyond feeding need
 
 
 def _farm_fingerprint(farm):
@@ -497,19 +499,27 @@ def _clone_distance(fp_a, fp_b):
     return sum(abs(fp_a.get(k, 0) - fp_b.get(k, 0)) for k in keys)
 
 
-def _premium_shift(obs, action, step):
-    """Advance-sell premium items one step early when farms are converged (clone dist ≤ 8)."""
+def _clone_threshold(obs):
+    """Day-adaptive clone threshold: wider early game, tighter late game."""
+    day = int(_get(obs, "day", 0) or 0)
+    if day < 10: return 12
+    if day < 20: return 8
+    return 6
+
+
+def _premium_shift(obs, action, step, thresh=8):
+    """Advance-sell premium items 1-2 steps early when farms are converged.
+
+    Lookahead divisors: step+1 → qty//2, step+2 → qty//3 (smaller, more speculative).
+    """
     if not (_PREMIUM_WINDOW[0] <= step < _PREMIUM_WINDOW[1]):
-        return action
-    if step + 1 >= len(_ACTIONS):
         return action
     seat     = _seat(obs)
     farms    = list(_get(obs, "farms", []) or [])
     my_farm  = _farm(obs, seat)
     opp_farm = farms[1 - seat] if len(farms) >= 2 else {}
-    if _clone_distance(_farm_fingerprint(my_farm), _farm_fingerprint(opp_farm)) > 8:
+    if _clone_distance(_farm_fingerprint(my_farm), _farm_fingerprint(opp_farm)) > thresh:
         return action
-    next_market = list((_ACTIONS[step + 1].get("market") or []))
     shed = _get(_get(obs, "private", {}) or {}, "shed", {}) or {}
     current_sells = {
         str(o[1]) for o in (action.get("market") or [])
@@ -517,35 +527,174 @@ def _premium_shift(obs, action, step):
     }
     action = _copy_action(action)
     market = list(action.get("market") or [])
-    for order in next_market:
-        if not (isinstance(order, list) and len(order) >= 3 and order[0] == "SELL"):
+    for lookahead, divisor in ((1, 2), (2, 3)):
+        future_step = step + lookahead
+        if future_step >= len(_ACTIONS):
             continue
-        item = str(order[1])
-        if item not in _PREMIUM_ITEMS or item in current_sells:
-            continue
-        next_qty = max(0, int(order[2]))
-        shed_qty = max(0, int(shed.get(item, 0) or 0))
-        advance  = min(_PREMIUM_MAX_QTY, shed_qty, next_qty // 2)
-        if advance <= 0:
-            continue
-        market.append(["SELL", item, advance])
-        current_sells.add(item)
+        for order in list((_ACTIONS[future_step].get("market") or [])):
+            if not (isinstance(order, list) and len(order) >= 3 and order[0] == "SELL"):
+                continue
+            item = str(order[1])
+            if item not in _PREMIUM_ITEMS or item in current_sells:
+                continue
+            future_qty = max(0, int(order[2]))
+            shed_qty   = max(0, int(shed.get(item, 0) or 0))
+            advance    = min(_PREMIUM_MAX_QTY, shed_qty, future_qty // divisor)
+            if advance <= 0:
+                continue
+            market.append(["SELL", item, advance])
+            current_sells.add(item)
     action["market"] = market
     return action
 
 
+def _expand_route_sells(obs, action, thresh=8):
+    """When farms are converged, expand route SELL quantities to full shed contents."""
+    seat     = _seat(obs)
+    farms    = list(_get(obs, "farms", []) or [])
+    my_farm  = _farm(obs, seat)
+    opp_farm = farms[1 - seat] if len(farms) >= 2 else {}
+    if _clone_distance(_farm_fingerprint(my_farm), _farm_fingerprint(opp_farm)) > thresh:
+        return action
+    shed   = _get(_get(obs, "private", {}) or {}, "shed", {}) or {}
+    action = _copy_action(action)
+    market = list(action.get("market") or [])
+    for order in market:
+        if not (isinstance(order, list) and len(order) >= 3 and order[0] == "SELL"):
+            continue
+        item     = str(order[1])
+        shed_qty = max(0, int(shed.get(item, 0) or 0))
+        if shed_qty > int(order[2]):
+            order[2] = shed_qty   # _safe_market will clamp to actual available
+    action["market"] = market
+    return action
+
+
+def _merge_sells(action):
+    """Merge duplicate SELL orders for the same item into one."""
+    action   = _copy_action(action)
+    market   = list(action.get("market") or [])
+    sell_map = {}
+    non_sells = []
+    for order in market:
+        if isinstance(order, list) and len(order) >= 3 and order[0] == "SELL":
+            item = str(order[1])
+            sell_map[item] = sell_map.get(item, 0) + max(0, int(order[2]))
+        else:
+            non_sells.append(order)
+    merged = non_sells + [["SELL", item, qty] for item, qty in sell_map.items() if qty > 0]
+    action["market"] = merged[:10]
+    return action
+
+
+def _overflow_sells(obs, action):
+    """When shed is full, force-sell the most plentiful items not already being sold."""
+    private = _get(obs, "private", {}) or {}
+    shed    = _get(private, "shed", {}) or {}
+    total   = sum(max(0, int(v or 0)) for v in shed.values())
+    if total < _SHED_OVERFLOW:
+        return action
+    action        = _copy_action(action)
+    market        = list(action.get("market") or [])
+    current_sells = {str(o[1]) for o in market
+                     if isinstance(o, list) and len(o) >= 2 and o[0] == "SELL"}
+    items_by_qty  = sorted(
+        ((item, max(0, int(shed.get(item, 0) or 0))) for item in _SELLABLE),
+        key=lambda x: -x[1],
+    )
+    slots_left = 10 - len(market)
+    for item, qty in items_by_qty:
+        if slots_left <= 0:
+            break
+        if item in current_sells or qty <= 0:
+            continue
+        market.append(["SELL", item, qty])
+        current_sells.add(item)
+        slots_left -= 1
+    action["market"] = market
+    return action
+
+
+def _wheat_buffer_sell(obs, action):
+    """Sell wheat beyond what animals still need for the rest of the game."""
+    if any(isinstance(o, list) and len(o) >= 2 and o[0] == "SELL" and o[1] == "WHEAT"
+           for o in (action.get("market") or [])):
+        return action
+    seat    = _seat(obs)
+    farm    = _farm(obs, seat)
+    private = _get(obs, "private", {}) or {}
+    shed    = _get(private, "shed", {}) or {}
+    day     = int(_get(obs, "day", 0) or 0)
+    tiles   = _get(farm, "tiles", []) or []
+    n_animals = sum(
+        1 for row in tiles
+        for t in (row if isinstance(row, list) else [row])
+        if isinstance(t, dict) and t.get("animal")
+    )
+    days_left    = max(1, 30 - day)
+    wheat_needed = n_animals * days_left + _WHEAT_BUFFER
+    excess       = max(0, int(shed.get("WHEAT", 0) or 0) - wheat_needed)
+    if excess <= 0:
+        return action
+    action = _copy_action(action)
+    market = list(action.get("market") or [])
+    if len(market) < 10:
+        market.append(["SELL", "WHEAT", excess])
+        action["market"] = market
+    return action
+
+
+_prev_market_inv = {}
+
+
+def _detect_opponent_sells(obs):
+    """Return items the opponent likely sold last step (market inventory jumped up)."""
+    global _prev_market_inv
+    market    = _get(obs, "market", {}) or {}
+    inventory = _get(market, "inventory", {}) or {}
+    opp_sold  = set()
+    for item in _SELLABLE:
+        prev = _prev_market_inv.get(item, 0)
+        curr = max(0, int(_get(inventory, item, 0) or 0))
+        if curr > prev + 3:   # inventory increased by >3 units (excludes NPC buy noise)
+            opp_sold.add(item)
+    _prev_market_inv = {item: max(0, int(_get(inventory, item, 0) or 0)) for item in _SELLABLE}
+    return opp_sold
+
+
 def agent(obs):
     try:
-        step     = min(max(0, int(_get(obs, "step", 0) or 0)), len(_ACTIONS) - 1)
-        action   = _weed_repair_action(obs, _copy_action(_ACTIONS[step]), _ACTIONS, step)
-        action   = _safe_market(obs, action)
-        action   = _premium_shift(obs, action, step)
-        action   = _safe_market(obs, action)
+        step   = min(max(0, int(_get(obs, "step", 0) or 0)), len(_ACTIONS) - 1)
+        day    = int(_get(obs, "day", 0) or 0)
+        thresh = _clone_threshold(obs)
+
+        action = _weed_repair_action(obs, _copy_action(_ACTIONS[step]), _ACTIONS, step)
+        action = _safe_market(obs, action)
+        action = _premium_shift(obs, action, step, thresh=thresh)
+        action = _expand_route_sells(obs, action, thresh=thresh)
+        action = _safe_market(obs, action)
+        action = _merge_sells(action)
+        action = _safe_market(obs, action)
+
+        # Skip selling items the opponent just dumped (let price recover), except in final stretch
+        opp_sold = _detect_opponent_sells(obs)
+        if opp_sold and day < 28:
+            market   = list(action.get("market") or [])
+            non_dump = [o for o in market
+                        if not (isinstance(o, list) and len(o) >= 2
+                                and o[0] == "SELL" and str(o[1]) in opp_sold)]
+            if len(non_dump) > 0:
+                action["market"] = non_dump
+
+        action = _wheat_buffer_sell(obs, action)
+        action = _overflow_sells(obs, action)
         exposure = _opponent_exposure(obs)
         action   = _impact_slots(obs, action, opponent_exposure=exposure)
         action   = _safe_market(obs, action)
-        if step == len(_ACTIONS) - 1:
+
+        if step >= len(_ACTIONS) - 3:   # terminal window: last 3 steps
             action = _terminal_market(obs, action)
+
         return _align_hands(action, obs)
     except Exception:
         farm = _farm(obs, _seat(obs))
