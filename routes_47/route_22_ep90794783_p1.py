@@ -1,16 +1,18 @@
-"""Kaggriculture agent — MapleLeaf 4.7
-Route:   ep=90794783 P1 (best of 400 candidates from 200 top-player replays;
-         benchmarked vs 4.6 — 10 games each)
+"""Kaggriculture agent — Route candidate ep=90794783 P1 score=139,320
+Route:   ep=90637595 P1 (best of 204 candidates from 102 top-player replays;
+         +5,731/game and 20/20 wins vs 4.5)
 Market:  price-impact SELL sort + NPC-demand persistence weighting
          + opponent-weighted impact sort (contested items sell first)
          + premium-shift 2-step lookahead (step+1 qty//2, step+2 qty//3)
          + Town-Center-phase-aware terminal liquidation
          + NPC-threat-weighted opponent exposure (log-scale yield units)
          + order-preserving merge of duplicate SELL orders
-         + pre-terminal no-recovery bleed (MELON/WOOL/FERTILIZER from step -10)
+         + pre-terminal no-recovery bleed (MELON/WOOL/FERTILIZER from step -7)
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 
-vs 4.6: new route from 200-file replay corpus; preterminal window -7 → -10.
+vs 4.5: new route backbone extracted from 200+ top-player replay JSON files,
+        benchmarked against all candidates; COW+SHEEP dual strategy with
+        BUY_PRODUCT WHEAT 5 at step 0 for faster early feed cycle.
 """
 import base64
 import copy
@@ -769,7 +771,7 @@ def agent(obs):
         action   = _impact_slots(obs, action, opponent_exposure=exposure)
         action   = _merge_sells(action)
         action   = _safe_market(obs, action)
-        if step >= len(_ACTIONS) - 10:
+        if step >= len(_ACTIONS) - 7:
             action = _preterminal_no_recovery(obs, action)
         if step >= len(_ACTIONS) - 3:
             action = _terminal_market(obs, action)
