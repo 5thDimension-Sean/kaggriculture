@@ -1,6 +1,5 @@
-"""Kaggriculture agent — MapleLeaf 4.6
-Route:   ep=90637595 P1 (best of 204 candidates from 102 top-player replays;
-         +5,731/game and 20/20 wins vs 4.5)
+"""Kaggriculture agent — Route candidate ep=90639212 P0 score=145,925
+Route:   v22 roma (ep 90473746, 2026-08-07)
 Market:  price-impact SELL sort + NPC-demand persistence weighting
          + opponent-weighted impact sort (contested items sell first)
          + premium-shift 2-step lookahead (step+1 qty//2, step+2 qty//3)
@@ -8,11 +7,14 @@ Market:  price-impact SELL sort + NPC-demand persistence weighting
          + NPC-threat-weighted opponent exposure (log-scale yield units)
          + order-preserving merge of duplicate SELL orders
          + pre-terminal no-recovery bleed (MELON/WOOL/FERTILIZER from step -7)
+         + opponent-dump hold: defer sell 1 step when opp just flooded item
+         + hyperactive-opponent detection: skip premium_shift vs RL flood bots
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 
-vs 4.5: new route backbone extracted from 200+ top-player replay JSON files,
-        benchmarked against all candidates; COW+SHEEP dual strategy with
-        BUY_PRODUCT WHEAT 5 at step 0 for faster early feed cycle.
+vs 4.4: _opp_hold_sells wired (defers route sells 1 step after opponent dumps);
+        _detect_opponent_sells return value used for hold logic; hyperactive
+        opponent mode disables premium_shift (their floods make advance sells
+        unpredictable).
 """
 import base64
 import copy
