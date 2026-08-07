@@ -112,19 +112,57 @@ def sanity_check(agent_b, name_b):
     else:
         print("[sanity] WARNING: could not access _NET from agent globals")
 
-    # ── Sample 3 actual game steps ──────────────────────────────────────────
-    env = make("kaggriculture", configuration={"episodeSteps": 4}, debug=False)
+    # ── Sample actual game steps and show raw logits ───────────────────────
+    encode_obs_fn = globs.get("encode_obs")
+    env = make("kaggriculture", configuration={"episodeSteps": 5}, debug=False)
     results = []
+    obs_list = []
 
     def spy(obs):
+        obs_list.append(obs)
         action = agent_b(obs)
         results.append(action)
         return action
 
     env.run([spy, "random"])
+
+    # Print obs structure on first step for diagnosis
+    if obs_list:
+        o = obs_list[0]
+        print(f"\n[sanity] obs type at step 0: {type(o).__name__}")
+        try:
+            keys = list(o.keys())
+            print(f"[sanity] obs keys: {keys}")
+        except AttributeError:
+            print(f"[sanity] obs has no .keys() method")
+        try:
+            player = o["player"]
+            farms = o["farms"]
+            farm0 = farms[player]
+            tiles = farm0.get("tiles") if hasattr(farm0, "get") else farm0["tiles"]
+            tile00 = tiles[0][0]
+            priv = o.get("private") if hasattr(o, "get") else o["private"]
+            print(f"[sanity] player={player}, type(farms[player])={type(farm0).__name__}")
+            print(f"[sanity] tiles[0][0]={tile00!r}  (type={type(tile00).__name__})")
+            print(f"[sanity] private keys: {list(priv.keys()) if hasattr(priv,'keys') else priv}")
+        except Exception as e:
+            print(f"[sanity] obs introspection failed: {e}")
+
     print(f"\n[sanity] {name_b} first {len(results)} actions (as P0):")
-    for i, a in enumerate(results):
-        print(f"  step {i}: farmer={a.get('farmer')}  market={a.get('market', [])[:2]}")
+    for i, (obs, a) in enumerate(zip(obs_list, results)):
+        farmer = a.get("farmer")
+        if net is not None and encode_obs_fn is not None:
+            try:
+                enc = encode_obs_fn(obs)
+                logits = net.forward(enc)
+                top3 = sorted(enumerate(logits), key=lambda x: -x[1])[:3]
+                enc_norm = float(np.linalg.norm(enc))
+                print(f"  step {i}: farmer={farmer}  enc_norm={enc_norm:.3f}  "
+                      f"top3_idx={[t[0] for t in top3]}  top3_val={[round(float(t[1]),2) for t in top3]}")
+            except Exception as e:
+                print(f"  step {i}: farmer={farmer}  encode_obs error: {e}")
+        else:
+            print(f"  step {i}: farmer={farmer}")
     print()
 
 

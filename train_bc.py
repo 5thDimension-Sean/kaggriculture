@@ -111,31 +111,34 @@ def parse_replay(path, min_score=0.0, both_players=False):
     obs_list, act_list = [], []
 
     for player in players:
+        # The replay stores obs[i] = state AFTER action[i] was applied.
+        # For BC training we want (obs_before_action[i], action[i]) pairs,
+        # which equals (obs[i-1], action[i]).  Shift by one step here.
+        prev_obs = None
         for step_entry in steps:
             if len(step_entry) <= player:
+                prev_obs = None
                 continue
             entry = step_entry[player]
 
             action_dict = entry.get("action")
-            obs_dict = entry.get("observation")
-            if action_dict is None or obs_dict is None:
-                continue
+            obs_dict    = entry.get("observation")
 
-            farmer = action_dict.get("farmer")
-            if not farmer:
-                continue
+            # pair: previous step's observation + current step's action
+            if prev_obs is not None and action_dict is not None:
+                farmer = action_dict.get("farmer")
+                if farmer:
+                    idx = _farmer_to_idx(farmer)
+                    if idx is not None:
+                        try:
+                            vec = encode_obs(prev_obs)
+                        except Exception:
+                            pass
+                        else:
+                            obs_list.append(vec)
+                            act_list.append(idx)
 
-            idx = _farmer_to_idx(farmer)
-            if idx is None:
-                continue
-
-            try:
-                vec = encode_obs(obs_dict)
-            except Exception:
-                continue
-
-            obs_list.append(vec)
-            act_list.append(idx)
+            prev_obs = obs_dict  # advance the sliding window
 
     if not obs_list:
         return np.empty((0, OBS_DIM), np.float32), np.empty(0, np.int64)
