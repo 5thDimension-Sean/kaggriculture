@@ -33,6 +33,8 @@ if not os.path.exists(_WEIGHTS_PATH):
 _NET = PolicyNet().load(_WEIGHTS_PATH)
 print(f"[main_bc] Loaded weights from {_WEIGHTS_PATH}", flush=True)
 
+_LOGGED_ERROR = False
+
 
 def _get_net():
     return _NET
@@ -467,6 +469,12 @@ def agent(obs):
         return _align_hands(action, obs)
 
     except Exception:
+        global _LOGGED_ERROR
+        if not _LOGGED_ERROR:
+            import traceback
+            print("\n[main_bc] ERROR on first agent() call:", flush=True)
+            traceback.print_exc()
+            _LOGGED_ERROR = True
         farm = _farm(obs, _seat(obs))
         return {
             "farmer": ["PASS"],
