@@ -210,6 +210,8 @@ class KagricultureGym:
         self.prev_money = 3000.0
         self.prev_n_weeds = 0
         self.prev_n_animals = 0
+        self.prev_n_cared = 0
+        self.prev_n_fertilized = 0
 
     def reset(self, seed=None, options=None):
         from kaggle_environments import make
@@ -220,6 +222,8 @@ class KagricultureGym:
         self.prev_money = float(raw["farms"][raw["player"]]["money"])
         self.prev_n_weeds = 0
         self.prev_n_animals = 0
+        self.prev_n_cared = 0
+        self.prev_n_fertilized = 0
         return encode_obs(raw), {}
 
     def step(self, action_idx):
@@ -253,6 +257,29 @@ class KagricultureGym:
         if n_weeds > self.prev_n_weeds:
             reward -= 0.5 * (n_weeds - self.prev_n_weeds)
         self.prev_n_weeds = n_weeds
+
+        # Bonus: animals cared for today (banks yield bonus on next production)
+        n_cared = sum(
+            1 for row in tiles for t in row
+            if isinstance(t, dict)
+            and t.get("kind") in ("COOP", "PASTURE")
+            and t.get("animal")
+            and t.get("cared_today")
+        )
+        if n_cared > self.prev_n_cared:
+            reward += 0.05 * (n_cared - self.prev_n_cared)
+        self.prev_n_cared = n_cared
+
+        # Bonus: fertilized plants (doubles per-day yield bonus for 3 days)
+        n_fertilized = sum(
+            1 for row in tiles for t in row
+            if isinstance(t, dict)
+            and t.get("kind") == "PLANT"
+            and t.get("fertilized_until_day", -1) >= raw.get("day", 0)
+        )
+        if n_fertilized > self.prev_n_fertilized:
+            reward += 0.03 * (n_fertilized - self.prev_n_fertilized)
+        self.prev_n_fertilized = n_fertilized
 
         obs = encode_obs(raw)
         return obs, float(reward), bool(done), False, {}
@@ -321,15 +348,20 @@ def export_weights(sb3_policy, out_path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--steps",  type=int,   default=2_000_000,
+    parser.add_argument("--steps",    type=int,   default=2_000_000,
                         help="Total PPO timesteps (default 2M)")
-    parser.add_argument("--envs",   type=int,   default=4,
+    parser.add_argument("--envs",     type=int,   default=4,
                         help="Parallel environments (default 4)")
-    parser.add_argument("--lr",     type=float, default=3e-4)
-    parser.add_argument("--resume", action="store_true",
+    parser.add_argument("--lr",       type=float, default=3e-4)
+    parser.add_argument("--resume",   action="store_true",
                         help="Resume from weights.npz if present")
-    parser.add_argument("--out",    default="weights",
+    parser.add_argument("--out",      default="weights",
                         help="Output weights filename (no extension)")
+    parser.add_argument("--opponent", default="random",
+                        help="Opponent agent: 'random', 'starter', or path to a .py file "
+                             "(e.g. main.py for self-play against the current submission)")
+    parser.add_argument("--self-play-interval", type=int, default=500_000,
+                        help="Steps between opponent snapshots during self-play (default 500k)")
     args = parser.parse_args()
 
     torch  = _require("torch")
@@ -341,18 +373,24 @@ def main():
     if device == "cuda":
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
 
+    opponent = args.opponent
+    print(f"Opponent: {opponent}")
+    if opponent not in ("random", "starter") and not os.path.exists(opponent):
+        sys.exit(f"Opponent file not found: {opponent}")
+
     # Vectorised environments
     try:
         from stable_baselines3.common.vec_env import SubprocVecEnv
         def make_env(i):
             def _init():
-                return KagricultureGym(opponent="random")
+                return KagricultureGym(opponent=opponent)
             return _init
         vec_env = SubprocVecEnv([make_env(i) for i in range(args.envs)])
     except Exception as e:
         print(f"SubprocVecEnv failed ({e}), falling back to DummyVecEnv")
         from stable_baselines3.common.vec_env import DummyVecEnv
-        vec_env = DummyVecEnv([lambda: KagricultureGym(opponent="random")
+        opp = opponent
+        vec_env = DummyVecEnv([lambda: KagricultureGym(opponent=opp)
                                 for _ in range(args.envs)])
 
     policy_kwargs = dict(
@@ -382,10 +420,27 @@ def main():
     print(f"\nStarting PPO training: {args.steps:,} timesteps across {args.envs} envs")
     print("Progress logs → ./tb_logs/  (tensorboard --logdir=tb_logs)")
 
-    model.learn(
-        total_timesteps = args.steps,
-        progress_bar    = True,
-    )
+    is_self_play = opponent not in ("random", "starter")
+    if is_self_play:
+        # Self-play: train in chunks, save a snapshot after each chunk,
+        # then restart envs with the updated opponent.
+        interval = args.self_play_interval
+        steps_done = 0
+        snapshot_idx = 0
+        while steps_done < args.steps:
+            chunk = min(interval, args.steps - steps_done)
+            model.learn(total_timesteps=chunk, progress_bar=True, reset_num_timesteps=False)
+            steps_done += chunk
+            # Export current policy as the new opponent snapshot
+            snapshot_path = f"snapshot_{snapshot_idx}"
+            export_weights(model.policy, snapshot_path)
+            snapshot_idx += 1
+            print(f"[self-play] snapshot saved → {snapshot_path}.npz  ({steps_done:,}/{args.steps:,} steps)")
+    else:
+        model.learn(
+            total_timesteps = args.steps,
+            progress_bar    = True,
+        )
 
     # Save SB3 checkpoint
     model.save("ppo_checkpoint")

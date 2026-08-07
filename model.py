@@ -7,8 +7,8 @@ import math
 import numpy as np
 
 # ── Dimensions ────────────────────────────────────
-OBS_DIM = 74
-N_ACTIONS = 20
+OBS_DIM = 82   # 74 base + 8 town shop flags
+N_ACTIONS = 21  # +FERTILIZE
 
 BOARD_SIZE = 10
 HALF = BOARD_SIZE // 2
@@ -23,6 +23,11 @@ PRODUCT_KEYS = ["WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON",
                 "EGG", "MILK", "WOOL", "FERTILIZER"]
 ANIMAL_PRODUCT = {"GOOSE": "EGG", "COW": "MILK", "SHEEP": "WOOL"}
 
+SHOP_KEYS = [
+    "BAKERY", "PIZZA_SHOP", "BRUNCH_SPOT", "YARN_STORE",
+    "ICE_CREAM_SHOP", "PET_CAFE", "SMOOTHIE_SHOP", "FARMERS_MARKET",
+]
+
 # Farmer action index → game action list
 ACTIONS = [
     ["PASS"],                                      # 0
@@ -34,6 +39,7 @@ ACTIONS = [
     ["PLANT", "TOMATO"], ["PLANT", "STRAWBERRY"],  # 15-16
     ["PLANT", "MELON"],                             # 17
     ["PICKUP", "WHEAT", 5], ["DROP"],               # 18-19
+    ["FERTILIZE"],                                  # 20
 ]
 
 
@@ -159,7 +165,12 @@ def encode_obs(obs):
         min(1.0, n_weed / 5.0),
     ]
 
-    # 12. Current tile features  (8)
+    # 12. Town shops unlocked  (8)
+    town = obs.get("town", {}) or {}
+    unlocked_shops = set(town.get("unlocked_shops", []) or [])
+    feats += [float(s in unlocked_shops) for s in SHOP_KEYS]
+
+    # 13. Current tile features  (8)
     ftile = tiles[fy][fx] if 0 <= fy < BOARD_SIZE and 0 <= fx < BOARD_SIZE else None
     if ftile is None:
         feats += [1, 0, 0, 0, 0, 0, 0, 0]
@@ -186,7 +197,7 @@ def encode_obs(obs):
     else:
         feats += [0] * 8
 
-    # Verify dimension
+    # Verify dimension  (74 base + 8 town shop flags = 82)
     assert len(feats) == OBS_DIM, f"Expected {OBS_DIM} got {len(feats)}"
     return np.array(feats, dtype=np.float32)
 

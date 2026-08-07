@@ -52,27 +52,53 @@ _GLUT_WEIGHT = {
 
 _WEED_STATE = {0: {}, 1: {}}
 
-# ── NPC demand data (from Yummers notebook analysis) ──────────────────────────
-# Units consumed per 4-turn market tick at base rate (day 0-10).
-# Town Center doubles at day 10 (2×) and quadruples at day 20 (4×).
-# FERTILIZER and MELON have near-zero NPC demand — price drops are permanent.
-_NPC_PER_4_TICK = {
-    "WHEAT":       5.0,   # Bakery+Pizza+Brunch+IceCream+FarmersMarket
-    "CARROT":      3.0,   # PetCafe(2)+FarmersMarket
-    "TOMATO":      2.0,   # Pizza+FarmersMarket
-    "STRAWBERRY":  4.0,   # Brunch+IceCream+Smoothie+FarmersMarket
-    "MELON":       0.33,  # Town Center only (every 12 turns baseline)
-    "EGG":         2.0,   # Bakery+Brunch
-    "MILK":        3.0,   # Pizza+IceCream+Smoothie
-    "WOOL":        2.0,   # YarnStore(2)
-    "FERTILIZER":  0.0,   # no NPC demand at all
+# ── NPC demand data ────────────────────────────────────────────────────────────
+# Town center consumes 1 of each product (excl. FERTILIZER) per 12 turns.
+# After day 10 → 2/12t, after day 20 → 4/12t.
+# Shops each consume their products every 4 turns when unlocked.
+_TC_BASE_PER_4 = 1.0 / 3.0  # 1 unit per 12 turns expressed as per-4-turn rate
+
+# Per-shop demand per 4-turn tick (matches borg.md shop table)
+_SHOP_DEMAND = {
+    "BAKERY":         {"EGG": 1.0, "WHEAT": 1.0},
+    "PIZZA_SHOP":     {"MILK": 1.0, "TOMATO": 1.0, "WHEAT": 1.0},
+    "BRUNCH_SPOT":    {"EGG": 1.0, "WHEAT": 1.0, "STRAWBERRY": 1.0},
+    "YARN_STORE":     {"WOOL": 2.0},
+    "ICE_CREAM_SHOP": {"STRAWBERRY": 1.0, "MILK": 1.0, "WHEAT": 1.0},
+    "PET_CAFE":       {"CARROT": 2.0},
+    "SMOOTHIE_SHOP":  {"STRAWBERRY": 1.0, "MILK": 1.0},
+    "FARMERS_MARKET": {"WHEAT": 1.0, "CARROT": 1.0, "TOMATO": 1.0, "STRAWBERRY": 1.0},
 }
 
+# Maximum possible shop demand (all shops unlocked) — used as fallback
+_MAX_SHOP_DEMAND = {}
+for _sd in _SHOP_DEMAND.values():
+    for _k, _v in _sd.items():
+        _MAX_SHOP_DEMAND[_k] = _MAX_SHOP_DEMAND.get(_k, 0.0) + _v
 
-def _npc_eff(item, day):
-    """Effective NPC demand per 4 turns, scaled by Town Center phase."""
-    tc = 4.0 if day >= 20 else (2.0 if day >= 10 else 1.0)
-    return _NPC_PER_4_TICK.get(item, 1.0) * tc
+
+def _npc_eff(item, day, obs=None):
+    """Effective NPC demand per 4 turns.
+
+    Uses actual unlocked shop state from obs when available.
+    Correctly separates shop demand (static) from Town Center (scales with day).
+    """
+    if item == "FERTILIZER":
+        return 0.0
+    # Town center component — scales with day phase
+    tc_mult = 4.0 if day >= 20 else (2.0 if day >= 10 else 1.0)
+    tc = _TC_BASE_PER_4 * tc_mult
+    # Shop component — sum over unlocked shops
+    if obs is not None:
+        town = _get(obs, "town", {}) or {}
+        unlocked = set(_get(town, "unlocked_shops", []) or [])
+        shop = sum(
+            _SHOP_DEMAND[s].get(item, 0.0)
+            for s in unlocked if s in _SHOP_DEMAND
+        )
+    else:
+        shop = _MAX_SHOP_DEMAND.get(item, 0.0)
+    return tc + shop
 
 
 def _get(value, key, default=None):
@@ -313,7 +339,7 @@ def _impact_score(obs, order):
     price_impact = float(quantity) * max(0.0, cur_quote - later_q)
 
     day         = int(_get(obs, "day", 0) or 0)
-    npc         = _npc_eff(item, day)
+    npc         = _npc_eff(item, day, obs)
     # persistence in (0.05, 1.0]: FERTILIZER→1.0, WHEAT@day20→~0.05
     persistence = 1.0 / (1.0 + npc)
     return price_impact * (1.0 + 0.10 * persistence)
@@ -357,10 +383,10 @@ def _opponent_exposure(obs):
             product = _PRODUCT_BY_ANIMAL.get(str(tile.get("animal", "")).upper())
             yield_u = float(tile.get("yield_units", 0) or 0)
             if crop in exposure:
-                threat_w            = 1.0 / (1.0 + _npc_eff(crop, day) * 0.1)
+                threat_w            = 1.0 / (1.0 + _npc_eff(crop, day, obs) * 0.1)
                 exposure[crop]     += threat_w * max(1.0, yield_u)
             if product:
-                threat_w            = 1.0 / (1.0 + _npc_eff(product, day) * 0.1)
+                threat_w            = 1.0 / (1.0 + _npc_eff(product, day, obs) * 0.1)
                 exposure[product]  += threat_w * (1.0 + max(0.0, yield_u))
             if tile.get("fertilizer_available", False):
                 exposure["FERTILIZER"] += 1.0   # FERTILIZER has 0 NPC → threat_w=1.0
@@ -388,7 +414,7 @@ def _terminal_market(obs, action):
         quantity = max(0, int(shed.get(item, 0) or 0))
         if quantity <= 0:
             continue
-        npc_urgency = 1.0 / (1.0 + _npc_eff(item, day) * 0.08)
+        npc_urgency = 1.0 / (1.0 + _npc_eff(item, day, obs) * 0.08)
         score = (
             (1.0 + exposure.get(item, 0.0))
             * _GLUT_WEIGHT.get(item, 1.0)
@@ -402,6 +428,77 @@ def _terminal_market(obs, action):
     return action
 
 
+_PREMIUM_ITEMS = frozenset({"STRAWBERRY", "MELON", "MILK", "WOOL"})
+# Max units of each premium item to sell per turn outside of terminal liquidation.
+# Prevents single-turn dumps that crash prices on items with steep above curves.
+_PREMIUM_TURN_CAP = {"STRAWBERRY": 8, "MELON": 5, "MILK": 8, "WOOL": 6}
+
+
+def _spread_premium_sells(obs, action):
+    """Cap premium item sells per turn to prevent single-turn price crashes."""
+    action = _copy_action(action)
+    day = int(_get(obs, "day", 0) or 0)
+    if day >= 27:
+        return action  # terminal liquidation takes over
+    market = []
+    for order in list(action.get("market", []) or []):
+        order = list(order)
+        if len(order) >= 3 and order[0] == "SELL" and order[1] in _PREMIUM_ITEMS:
+            try:
+                qty = int(order[2])
+            except (TypeError, ValueError):
+                qty = 0
+            order[2] = min(qty, _PREMIUM_TURN_CAP.get(order[1], qty))
+        if len(order) >= 3 and order[0] == "SELL":
+            try:
+                if int(order[2]) <= 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
+        market.append(order)
+    action["market"] = market
+    return action
+
+
+def _pre_terminal_market(obs, action):
+    """Days 27-29: progressively liquidate items that won't recover by game end.
+
+    Low-NPC-recovery items (MELON, FERTILIZER, WOOL) get sold most aggressively
+    because their price won't bounce back. High-demand items (WHEAT, STRAWBERRY)
+    are sold more conservatively since NPC demand keeps recovering prices.
+    """
+    action = _align_hands(action, obs)
+    day = int(_get(obs, "day", 0) or 0)
+    days_left = max(1, 29 - day)
+    shed = _projected_shed(obs, action)
+    exposure = _opponent_exposure(obs)
+    existing_sells = {
+        o[1] for o in (action.get("market", []) or [])
+        if isinstance(o, list) and len(o) >= 2 and o[0] == "SELL"
+    }
+    new_orders = []
+    for item in _SELLABLE:
+        if item in existing_sells:
+            continue
+        qty = max(0, int(shed.get(item, 0) or 0))
+        if qty <= 0:
+            continue
+        npc = _npc_eff(item, day, obs)
+        # Items with low NPC recovery get sold more aggressively each day
+        persistence = 1.0 / (1.0 + npc)
+        sell_fraction = (0.35 + 0.65 * persistence) / days_left
+        sell_qty = max(1, int(qty * sell_fraction))
+        new_orders.append(["SELL", item, sell_qty])
+    # Sort new orders by opponent exposure × persistence so most dangerous first
+    new_orders.sort(
+        key=lambda o: (1.0 + exposure.get(o[1], 0.0)) * (1.0 / (1.0 + _npc_eff(o[1], day, obs))),
+        reverse=True,
+    )
+    existing = list(action.get("market", []) or [])
+    action["market"] = (existing + new_orders)[:10]
+    return action
+
+
 def agent(obs):
     try:
         step = min(max(0, int(_get(obs, "step", 0) or 0)), len(_ACTIONS) - 1)
@@ -412,13 +509,22 @@ def agent(obs):
         # 2. Clamp SELL quantities to actual shed inventory
         action = _safe_market(obs, action)
 
-        # 3. Sort SELL slots: highest self-damage goes first to minimise price impact
+        # 3. Cap premium item sells to avoid single-turn price crashes
+        action = _spread_premium_sells(obs, action)
+
+        # 4. Sort SELL slots: highest self-damage goes first to minimise price impact
         action = _impact_slots(obs, action)
 
-        # 4. Final safety clamp after sort
+        # 5. Final safety clamp after sort
         action = _safe_market(obs, action)
 
-        # 5. Terminal step: liquidate everything weighted by opponent exposure
+        # 6. Pre-terminal (days 27-28): progressively liquidate low-recovery items
+        day = int(_get(obs, "day", 0) or 0)
+        if 27 <= day < 29:
+            action = _pre_terminal_market(obs, action)
+            action = _safe_market(obs, action)
+
+        # 7. Terminal step: liquidate everything weighted by opponent exposure
         if step == len(_ACTIONS) - 1:
             action = _terminal_market(obs, action)
 
