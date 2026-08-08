@@ -1,4 +1,4 @@
-"""Kaggriculture agent — MapleLeaf 4.9 V2
+"""Kaggriculture agent — MapleLeaf 4.9
 Route:   ep=90794783 P1 (best of 400 candidates from 200 top-player replays;
          benchmarked vs 4.6 — 10 games each)
 Market:  price-impact SELL sort + NPC-demand persistence weighting
@@ -12,10 +12,6 @@ Market:  price-impact SELL sort + NPC-demand persistence weighting
          + fertilizer sell: sell excess above route PICKUP reserve (new in 4.9)
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 
-vs 4.9:   lower price-gate thresholds (35/30/25% → 15/12/8%) — in real competition
-           opponents flood items without a gate while our old thresholds blocked
-           profitable mid-range sells ($40–$60 range); new thresholds only block
-           true floor prices (<8–15% of base), matching what 4.7 would have sold.
 vs 4.8 V2: fixed and wired _fertilizer_sell — route has 84 FERTILIZER units reserved
            for PICKUP/FERTILIZE actions; _FERT_RESERVE[step] ensures we only sell
            genuine excess, capturing ~650/game extra revenue without disrupting farm.
@@ -492,16 +488,10 @@ _PRICE_GATE_SHED_LIMIT = 90    # bypass gate if shed is near capacity
 
 
 def _price_gate_thresh(day):
-    """Day-adaptive floor threshold: block only true floor prices.
-
-    Real-competition opponents flood markets without a gate; old thresholds
-    (35/30/25%) were blocking profitable mid-range sells ($40–$80) that 4.7
-    would execute — asymmetric revenue loss vs gated opponents.  New thresholds
-    only block genuine price-floor crashes (< 8–15% of base).
-    """
-    if day < 10:  return 0.15
-    if day < 20:  return 0.12
-    return 0.08
+    """Day-adaptive floor threshold: stricter in early game, looser late game."""
+    if day < 10:  return 0.35
+    if day < 20:  return 0.30
+    return 0.25
 
 
 def _price_gate_sells(obs, action, opp_sold=None):
