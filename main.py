@@ -1,4 +1,4 @@
-"""Kaggriculture agent — MapleLeaf 4.8 V3
+"""Kaggriculture agent — MapleLeaf 4.8 V2
 Route:   ep=90794783 P1 (best of 400 candidates from 200 top-player replays;
          benchmarked vs 4.6 — 10 games each)
 Market:  price-impact SELL sort + NPC-demand persistence weighting
@@ -10,16 +10,12 @@ Market:  price-impact SELL sort + NPC-demand persistence weighting
          + pre-terminal no-recovery bleed (MELON/WOOL/FERTILIZER from step -13)
          + price-gate: day-adaptive threshold (35/30/25% by phase) floor-crash defense
          + pre-terminal window extended -10 → -13 for MELON/WOOL early bleed
-         + fertilizer sell every turn (route discards ~182 units/game otherwise)
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 
-vs 4.8 V2: wire _fertilizer_sell (defined but uncalled since 4.8).
-           _overflow_sells left unwired: front-runs the route's scheduled sells —
-           dumps items at shed=75, depletes shed so the route's planned sell later
-           gets qty=0 from _safe_market; net revenue lower than just trusting route.
-           _opp_hold_sells left unwired: detects total market-inventory change
-           (both players combined), not opponent-only, causing self-defeating
-           sell deferrals in mirror play.
+vs 4.8: day-adaptive price gate (35% day<10, 30% day<20, 25% day>=20) holds
+        inventory longer in early game for premium pricing windows;
+        preterminal no-recovery window extended -10 → -13 steps so MELON/WOOL
+        begin bleeding 3 turns earlier, before both players pile in simultaneously.
 """
 import base64
 import copy
@@ -682,8 +678,10 @@ def _fertilizer_sell(obs, action):
 
     Replay analysis shows the route collects ~293 fertilizer/game but only sells
     ~27 — ~182 units are discarded when the shed fills up with other items.
-    Fertilizer market is stable (linear ±0.4, T=200) so selling every turn is safe.
-    Only adds the order if FERTILIZER isn't already being sold and a slot is free.
+
+    NOT WIRED: causes ~14k/game regression vs V2 in 20-game benchmark (0/20 wins).
+    Root cause unconfirmed — suspected slot displacement or price-curve flooding;
+    constant selling may crash fertilizer price before the route's planned sell windows.
     """
     private = _get(obs, "private", {}) or {}
     shed    = _get(private, "shed", {}) or {}
@@ -808,7 +806,6 @@ def agent(obs):
         action   = _impact_slots(obs, action, opponent_exposure=exposure)
         action   = _merge_sells(action)
         action   = _price_gate_sells(obs, action)
-        action   = _fertilizer_sell(obs, action)
         action   = _safe_market(obs, action)
         if step >= len(_ACTIONS) - 13:
             action = _preterminal_no_recovery(obs, action)
