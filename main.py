@@ -10,14 +10,16 @@ Market:  price-impact SELL sort + NPC-demand persistence weighting
          + pre-terminal no-recovery bleed (MELON/WOOL/FERTILIZER from step -13)
          + price-gate: day-adaptive threshold (35/30/25% by phase) floor-crash defense
          + pre-terminal window extended -10 → -13 for MELON/WOOL early bleed
-         + overflow sells: force-sell when shed >75 to prevent silent discard
          + fertilizer sell every turn (route discards ~182 units/game otherwise)
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 
-vs 4.8 V2: wire _overflow_sells and _fertilizer_sell (both defined but uncalled).
-           _opp_hold_sells left unwired: it detects total market-inventory change
-           rather than opponent-only sells, so in mirror play it defers our own
-           sells into the same step the opponent sells — crashing prices further.
+vs 4.8 V2: wire _fertilizer_sell (defined but uncalled since 4.8).
+           _overflow_sells left unwired: front-runs the route's scheduled sells —
+           dumps items at shed=75, depletes shed so the route's planned sell later
+           gets qty=0 from _safe_market; net revenue lower than just trusting route.
+           _opp_hold_sells left unwired: detects total market-inventory change
+           (both players combined), not opponent-only, causing self-defeating
+           sell deferrals in mirror play.
 """
 import base64
 import copy
@@ -806,7 +808,6 @@ def agent(obs):
         action   = _impact_slots(obs, action, opponent_exposure=exposure)
         action   = _merge_sells(action)
         action   = _price_gate_sells(obs, action)
-        action   = _overflow_sells(obs, action)
         action   = _fertilizer_sell(obs, action)
         action   = _safe_market(obs, action)
         if step >= len(_ACTIONS) - 13:
