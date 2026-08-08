@@ -10,14 +10,14 @@ Market:  price-impact SELL sort + NPC-demand persistence weighting
          + pre-terminal no-recovery bleed (MELON/WOOL/FERTILIZER from step -13)
          + price-gate: day-adaptive threshold (35/30/25% by phase) floor-crash defense
          + pre-terminal window extended -10 → -13 for MELON/WOOL early bleed
-         + opponent-flood deferral: hold sells 1 step when opp just dumped same item
          + overflow sells: force-sell when shed >75 to prevent silent discard
          + fertilizer sell every turn (route discards ~182 units/game otherwise)
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 
-vs 4.8 V2: wire three previously-defined-but-unused overlays — _opp_hold_sells
-           (captures opp_sold return value now discarded), _overflow_sells, and
-           _fertilizer_sell (~182 units/game × ~$100 = ~$18k/game recovered).
+vs 4.8 V2: wire _overflow_sells and _fertilizer_sell (both defined but uncalled).
+           _opp_hold_sells left unwired: it detects total market-inventory change
+           rather than opponent-only sells, so in mirror play it defers our own
+           sells into the same step the opponent sells — crashing prices further.
 """
 import base64
 import copy
@@ -797,7 +797,7 @@ def agent(obs):
     try:
         step     = min(max(0, int(_get(obs, "step", 0) or 0)), len(_ACTIONS) - 1)
         thresh   = _clone_threshold(obs)
-        opp_sold = _detect_opponent_sells(obs, step)
+        _detect_opponent_sells(obs, step)
         action   = _weed_repair_action(obs, _copy_action(_ACTIONS[step]), _ACTIONS, step)
         action   = _safe_market(obs, action)
         action   = _premium_shift(obs, action, step, thresh=thresh)
@@ -806,7 +806,6 @@ def agent(obs):
         action   = _impact_slots(obs, action, opponent_exposure=exposure)
         action   = _merge_sells(action)
         action   = _price_gate_sells(obs, action)
-        action   = _opp_hold_sells(obs, action, opp_sold, step)
         action   = _overflow_sells(obs, action)
         action   = _fertilizer_sell(obs, action)
         action   = _safe_market(obs, action)
