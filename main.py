@@ -1,4 +1,4 @@
-"""Kaggriculture agent — MapleLeaf 4.8 V2
+"""Kaggriculture agent — MapleLeaf 4.8 V3
 Route:   ep=90794783 P1 (best of 400 candidates from 200 top-player replays;
          benchmarked vs 4.6 — 10 games each)
 Market:  price-impact SELL sort + NPC-demand persistence weighting
@@ -10,12 +10,14 @@ Market:  price-impact SELL sort + NPC-demand persistence weighting
          + pre-terminal no-recovery bleed (MELON/WOOL/FERTILIZER from step -13)
          + price-gate: day-adaptive threshold (35/30/25% by phase) floor-crash defense
          + pre-terminal window extended -10 → -13 for MELON/WOOL early bleed
+         + opponent-flood deferral: hold sells 1 step when opp just dumped same item
+         + overflow sells: force-sell when shed >75 to prevent silent discard
+         + fertilizer sell every turn (route discards ~182 units/game otherwise)
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 
-vs 4.8: day-adaptive price gate (35% day<10, 30% day<20, 25% day>=20) holds
-        inventory longer in early game for premium pricing windows;
-        preterminal no-recovery window extended -10 → -13 steps so MELON/WOOL
-        begin bleeding 3 turns earlier, before both players pile in simultaneously.
+vs 4.8 V2: wire three previously-defined-but-unused overlays — _opp_hold_sells
+           (captures opp_sold return value now discarded), _overflow_sells, and
+           _fertilizer_sell (~182 units/game × ~$100 = ~$18k/game recovered).
 """
 import base64
 import copy
@@ -795,7 +797,7 @@ def agent(obs):
     try:
         step     = min(max(0, int(_get(obs, "step", 0) or 0)), len(_ACTIONS) - 1)
         thresh   = _clone_threshold(obs)
-        _detect_opponent_sells(obs, step)   # updates market-inv tracker + flood counter
+        opp_sold = _detect_opponent_sells(obs, step)
         action   = _weed_repair_action(obs, _copy_action(_ACTIONS[step]), _ACTIONS, step)
         action   = _safe_market(obs, action)
         action   = _premium_shift(obs, action, step, thresh=thresh)
@@ -804,6 +806,9 @@ def agent(obs):
         action   = _impact_slots(obs, action, opponent_exposure=exposure)
         action   = _merge_sells(action)
         action   = _price_gate_sells(obs, action)
+        action   = _opp_hold_sells(obs, action, opp_sold, step)
+        action   = _overflow_sells(obs, action)
+        action   = _fertilizer_sell(obs, action)
         action   = _safe_market(obs, action)
         if step >= len(_ACTIONS) - 13:
             action = _preterminal_no_recovery(obs, action)
