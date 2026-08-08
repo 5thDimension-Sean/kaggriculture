@@ -41,9 +41,20 @@ def run_game(agent_a, agent_b, seed):
     return float(final[0].reward or 0), float(final[1].reward or 0)
 
 
+_SEEDS_P0 = [
+    7030039913, 1767950141, 2067004398, 4263648760, 3313394522,
+    3101419947, 3930751749, 5948990031, 3837117532, 2455163851,
+]
+_SEEDS_P1 = [
+    4326338643, 7309474672, 2729251472, 5327694078, 6170128796,
+    3294844113, 4866511089, 7895609197, 5194945606, 2535557871,
+]
+
+
 def benchmark(agent_a, agent_b, name_a, name_b, n_games=20):
-    half   = n_games // 2
-    seeds  = list(range(3000, 3000 + half))
+    half     = n_games // 2
+    seeds_p0 = _SEEDS_P0[:half]
+    seeds_p1 = _SEEDS_P1[:half]
 
     wins_a = wins_b = ties = 0
     scores_a = []
@@ -55,7 +66,7 @@ def benchmark(agent_a, agent_b, name_a, name_b, n_games=20):
 
     # A as P0 (goes first in market each turn)
     print(f"\n  [{name_a} as P0]")
-    for i, seed in enumerate(seeds):
+    for i, seed in enumerate(seeds_p0):
         sa, sb = run_game(agent_a, agent_b, seed)
         scores_a.append(sa); scores_b.append(sb)
         if   sa > sb: wins_a += 1; tag = f"{name_a} WIN"
@@ -66,13 +77,13 @@ def benchmark(agent_a, agent_b, name_a, name_b, n_games=20):
 
     # A as P1 (market second)
     print(f"\n  [{name_a} as P1]")
-    for i, seed in enumerate(seeds):
-        sb, sa = run_game(agent_b, agent_a, seed + 10000)
+    for i, seed in enumerate(seeds_p1):
+        sb, sa = run_game(agent_b, agent_a, seed)
         scores_a.append(sa); scores_b.append(sb)
         if   sa > sb: wins_a += 1; tag = f"{name_a} WIN"
         elif sb > sa: wins_b += 1; tag = f"{name_b} WIN"
         else:         ties   += 1; tag = "TIE"
-        print(f"    game {i+1:2d} (seed={seed+10000}): "
+        print(f"    game {i+1:2d} (seed={seed}): "
               f"{name_a}={sa:>8,.0f}  {name_b}={sb:>8,.0f}  → {tag}")
 
     total  = wins_a + wins_b + ties
