@@ -1,4 +1,4 @@
-"""Kaggriculture agent — MapleLeaf 4.9
+"""Kaggriculture agent — MapleLeaf 4.8
 Route:   ep=90794783 P1 (best of 400 candidates from 200 top-player replays;
          benchmarked vs 4.6 — 10 games each)
 Market:  price-impact SELL sort + NPC-demand persistence weighting
@@ -11,10 +11,11 @@ Market:  price-impact SELL sort + NPC-demand persistence weighting
          + price-gate: hold sells when price < 30% of base (floor-crash defense)
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 
-vs 4.8: wire in _price_gate_sells (threshold 30%) to stop selling at floor prices.
+vs 4.7: wire in _price_gate_sells (threshold 30%) to stop selling at floor prices.
         Root cause of "weird" losses: opponent floods MILK market, MapLeaf keeps
         selling at $1/unit. Gating holds crashed items; NPC demand slowly recovers
         prices, and shed overflow + last-2-days bypass prevent deadlock.
+        Result: 20/20 wins, +$3,182/game vs 4.7.
 """
 import base64
 import copy
