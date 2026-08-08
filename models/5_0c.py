@@ -1,6 +1,6 @@
-"""Kaggriculture agent — MapleLeaf 5.0
-Route:   ep=91128753 P0 (score=132,583 — freshest top route from 30 training-data-v3 episodes;
-         #1 of 60 candidates ranked by winner score from recent top-player replays)
+"""Kaggriculture agent — MapleLeaf 5.0c
+Route:   ep=91128753_P0 P1 (best of 400 candidates from 200 top-player replays;
+         benchmarked vs 4.6 — 10 games each)
 Market:  price-impact SELL sort + NPC-demand persistence weighting
          + opponent-weighted impact sort (contested items sell first)
          + premium-shift 2-step lookahead (step+1 qty//2, step+2 qty//3)
@@ -8,11 +8,9 @@ Market:  price-impact SELL sort + NPC-demand persistence weighting
          + NPC-threat-weighted opponent exposure (log-scale yield units)
          + order-preserving merge of duplicate SELL orders
          + pre-terminal no-recovery bleed (MELON/WOOL/FERTILIZER from step -10)
-         + price-gate: hold sells when price < 20% of base (floor-crash defense)
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 
-vs 4.7: fresh route from training-data-v3 top corpus replaces stale ep=90794783.
-        Market logic identical to 4.7 (proven 2946 ELO; not changed to avoid regression).
+vs 4.6: new route from 200-file replay corpus; preterminal window -7 → -10.
 """
 import base64
 import copy
