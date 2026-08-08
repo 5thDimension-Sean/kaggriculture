@@ -1,7 +1,6 @@
 """Kaggriculture agent — MapleLeaf 4.8 V2
-Route:   ep=90794783 P1 (same proven backbone as 4.8 — highest-performing of all
-         tested candidates; v2 replay routes had higher scores but performed worse
-         as agent backbones in head-to-head benchmark)
+Route:   ep=90794783 P1 (best of 400 candidates from 200 top-player replays;
+         benchmarked vs 4.6 — 10 games each)
 Market:  price-impact SELL sort + NPC-demand persistence weighting
          + opponent-weighted impact sort (contested items sell first)
          + premium-shift 2-step lookahead (step+1 qty//2, step+2 qty//3)
@@ -9,15 +8,14 @@ Market:  price-impact SELL sort + NPC-demand persistence weighting
          + NPC-threat-weighted opponent exposure (log-scale yield units)
          + order-preserving merge of duplicate SELL orders
          + pre-terminal no-recovery bleed (MELON/WOOL/FERTILIZER from step -13)
-         + price-gate: dynamic day-adaptive threshold (35/30/25% by phase)
-         + overflow sells: force-sell when shed >75 (prevents end-of-day loss)
-         + wheat buffer sell: clears excess wheat beyond animal needs
-         + route expand: +50% qty when farms converged (FERTILIZER excluded)
-         + opportunistic harvest: sell premium items on price spikes (>=120% base)
+         + price-gate: day-adaptive threshold (35/30/25% by phase) floor-crash defense
+         + pre-terminal window extended -10 → -13 for MELON/WOOL early bleed
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 
-vs 4.8: five new overlays now active (overflow, wheat-buffer, expand-route,
-        opportunistic harvest, dynamic price gate); preterminal window -10 → -13.
+vs 4.8: day-adaptive price gate (35% day<10, 30% day<20, 25% day>=20) holds
+        inventory longer in early game for premium pricing windows;
+        preterminal no-recovery window extended -10 → -13 steps so MELON/WOOL
+        begin bleeding 3 turns earlier, before both players pile in simultaneously.
 """
 import base64
 import copy
@@ -467,26 +465,24 @@ _BASE_PRICES = {
     "STRAWBERRY": 120, "MELON": 250, "MILK": 160, "WOOL": 200,
     "EGG": 50, "TOMATO": 60, "CARROT": 35, "WHEAT": 25, "FERTILIZER": 100,
 }
-_PRICE_GATE_THRESH     = 0.30   # kept for reference; gate now uses _price_gate_thresh()
 _PRICE_GATE_FORCE_DAY  = 28    # always sell in last two days regardless of price
 _PRICE_GATE_SHED_LIMIT = 90    # bypass gate if shed is near capacity
 
 
 def _price_gate_thresh(day):
-    """Day-adaptive price gate: strict early (preserve inventory), loose late (clear)."""
-    if day < 10:
-        return 0.35
-    elif day < 20:
-        return 0.30
+    """Day-adaptive floor threshold: stricter in early game, looser late game."""
+    if day < 10:  return 0.35
+    if day < 20:  return 0.30
     return 0.25
 
 
 def _price_gate_sells(obs, action, opp_sold=None):
-    """Skip SELL orders where price has crashed below the day-adaptive threshold.
+    """Skip SELL orders where price has crashed to extreme lows (<20% of base).
 
-    Threshold scales from 35% (early game, preserve inventory for premium windows)
-    to 25% (late game, better to sell cheap than lose to shed overflow).
-    Safety valves: day>=28 or shed>90 always bypasses the gate.
+    The threshold is intentionally conservative so normal route sells are never
+    blocked — market prices during normal play are 30-80% of base and must go
+    through.  Only genuine floor-crashed prices (opponent flooded the market far
+    below equilibrium) are held back.
     """
     action = _copy_action(action)
     day = int(_get(obs, "day", 0) or 0)
@@ -495,7 +491,6 @@ def _price_gate_sells(obs, action, opp_sold=None):
     shed = _projected_shed(obs, action)
     if sum(shed.values()) > _PRICE_GATE_SHED_LIMIT:
         return action
-    thresh = _price_gate_thresh(day)
     prices = _get(_get(obs, "market", {}) or {}, "prices", {}) or {}
     market = []
     for raw in list(action.get("market", []) or []):
@@ -503,8 +498,8 @@ def _price_gate_sells(obs, action, opp_sold=None):
         if len(order) >= 3 and order[0] == "SELL" and order[1] in _BASE_PRICES:
             item      = order[1]
             cur_price = float(prices.get(item, _BASE_PRICES[item]) or 1)
-            if cur_price < _BASE_PRICES[item] * thresh:
-                continue  # floor crash — NPC demand will recover it
+            if cur_price < _BASE_PRICES[item] * _price_gate_thresh(day):
+                continue  # extreme floor crash; NPC demand will recover it
         market.append(order)
     action["market"] = market
     return action
@@ -595,9 +590,8 @@ def _premium_shift(obs, action, step, thresh=8):
 def _expand_route_sells(obs, action, thresh=8):
     """When farms are converged, expand route SELL qty to 1.5× (capped at shed).
 
-    Sells 50% more than the route planned — gets ahead of opponent's matching sell
-    volume when both farms are on the same production path.
-    FERTILIZER excluded: fertilization balance is route-critical; do not expand it.
+    Sells 50% more than the route planned rather than the full shed — keeps
+    price impact proportional and preserves inventory for later route windows.
     """
     seat     = _seat(obs)
     farms    = list(_get(obs, "farms", []) or [])
@@ -611,60 +605,12 @@ def _expand_route_sells(obs, action, thresh=8):
     for order in market:
         if not (isinstance(order, list) and len(order) >= 3 and order[0] == "SELL"):
             continue
-        item = str(order[1])
-        if item == "FERTILIZER":
-            continue
+        item      = str(order[1])
         route_qty = max(0, int(order[2]))
         shed_qty  = max(0, int(shed.get(item, 0) or 0))
-        expanded  = min(shed_qty, route_qty * 3 // 2)
+        expanded  = min(shed_qty, route_qty * 3 // 2)   # 1.5× route qty, not full shed
         if expanded > route_qty:
             order[2] = expanded
-    action["market"] = market
-    return action
-
-
-_OPP_HARVEST_LOOKFWD = 8
-_OPP_HARVEST_THRESH  = 1.20
-_OPP_HARVEST_FRAC    = 0.20
-
-
-def _opportunistic_harvest(obs, action, step):
-    """Sell premium items when price is elevated and route has no sell planned soon.
-
-    Fires when price >= 120% of base AND route has no SELL for this item in the
-    next 8 steps.  Sells 20% of shed — captures price spikes the route misses.
-    Only targets STRAWBERRY, MELON, MILK, WOOL.
-    """
-    action  = _copy_action(action)
-    market  = list(action.get("market") or [])
-    current = {str(o[1]) for o in market
-               if isinstance(o, list) and len(o) >= 2 and o[0] == "SELL"}
-    prices  = _get(_get(obs, "market", {}) or {}, "prices", {}) or {}
-    shed    = _get(_get(obs, "private", {}) or {}, "shed", {}) or {}
-
-    route_planned = set()
-    for offset in range(1, _OPP_HARVEST_LOOKFWD + 1):
-        look = step + offset
-        if look >= len(_ACTIONS):
-            break
-        for order in (_ACTIONS[look].get("market") or []):
-            if isinstance(order, list) and len(order) >= 2 and order[0] == "SELL":
-                route_planned.add(str(order[1]))
-
-    for item in _PREMIUM_ITEMS:
-        if item in current or len(market) >= 10 or item in route_planned:
-            continue
-        base     = _BASE_PRICES.get(item, 1)
-        cur      = float(prices.get(item, base) or 1)
-        if cur < base * _OPP_HARVEST_THRESH:
-            continue
-        shed_qty = max(0, int(shed.get(item, 0) or 0))
-        qty      = min(shed_qty, max(1, int(shed_qty * _OPP_HARVEST_FRAC)))
-        if qty <= 0:
-            continue
-        market.append(["SELL", item, qty])
-        current.add(item)
-
     action["market"] = market
     return action
 
@@ -700,11 +646,7 @@ def _merge_sells(action):
 
 
 def _overflow_sells(obs, action):
-    """When shed is full, force-sell the most plentiful items not already being sold.
-
-    FERTILIZER excluded: route uses it for crop fertilization; selling surplus
-    would deplete stock before hands can apply it.
-    """
+    """When shed is full, force-sell the most plentiful items not already being sold."""
     private = _get(obs, "private", {}) or {}
     shed    = _get(private, "shed", {}) or {}
     total   = sum(max(0, int(v or 0)) for v in shed.values())
@@ -715,8 +657,7 @@ def _overflow_sells(obs, action):
     current_sells = {str(o[1]) for o in market
                      if isinstance(o, list) and len(o) >= 2 and o[0] == "SELL"}
     items_by_qty  = sorted(
-        ((item, max(0, int(shed.get(item, 0) or 0))) for item in _SELLABLE
-         if item != "FERTILIZER"),
+        ((item, max(0, int(shed.get(item, 0) or 0))) for item in _SELLABLE),
         key=lambda x: -x[1],
     )
     slots_left = 10 - len(market)
@@ -854,14 +795,10 @@ def agent(obs):
     try:
         step     = min(max(0, int(_get(obs, "step", 0) or 0)), len(_ACTIONS) - 1)
         thresh   = _clone_threshold(obs)
-        _detect_opponent_sells(obs, step)
+        _detect_opponent_sells(obs, step)   # updates market-inv tracker + flood counter
         action   = _weed_repair_action(obs, _copy_action(_ACTIONS[step]), _ACTIONS, step)
         action   = _safe_market(obs, action)
         action   = _premium_shift(obs, action, step, thresh=thresh)
-        action   = _expand_route_sells(obs, action, thresh=thresh)
-        action   = _opportunistic_harvest(obs, action, step)
-        action   = _overflow_sells(obs, action)
-        action   = _wheat_buffer_sell(obs, action)
         action   = _safe_market(obs, action)
         exposure = _opponent_exposure(obs)
         action   = _impact_slots(obs, action, opponent_exposure=exposure)

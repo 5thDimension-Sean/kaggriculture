@@ -16,7 +16,7 @@ Market:  price-impact SELL sort + NPC-demand persistence weighting
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 
 vs 4.7: wire in _price_gate_sells (threshold 30%) to stop selling at floor prices.
-        Root cause of "weird" losses: opponent floods MILK market, MapLeaf keeps
+        Root cause of "weird" losses: opponent floods MILK market, MapleLeaf keeps
         selling at $1/unit. Gating holds crashed items; NPC demand slowly recovers
         prices, and shed overflow + last-2-days bypass prevent deadlock.
         Result: 20/20 wins, +$3,182/game vs 4.7.
