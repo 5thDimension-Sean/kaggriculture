@@ -6,13 +6,14 @@ Market:  price-impact SELL sort + NPC-demand persistence weighting
          + premium-shift 2-step lookahead (step+1 qty//2, step+2 qty//3)
          + Town-Center-phase-aware terminal liquidation
          + NPC-threat-weighted opponent exposure (log-scale yield units)
+         + price-gate: hold sells when price < 20% of base (floor-crash defense)
          + order-preserving merge of duplicate SELL orders
          + pre-terminal no-recovery bleed (MELON/WOOL/FERTILIZER from step -10)
-         + price-gate: hold sells when price < 20% of base (floor-crash defense)
 Safety:  shed-projection clamp so SELL quantities never exceed actual inventory
 
-vs 4.7: fresh route from training-data-v3 top corpus replaces stale ep=90794783.
-        Market logic identical to 4.7 (proven 2946 ELO; not changed to avoid regression).
+vs 4.7: Kakuteki route (ep=91128753 P0) replaces stale wheat-heavy ep=90794783.
+        Market: _price_gate_sells now wired in (skips extreme floor-crash sells;
+        was defined but unused in 4.7; threshold 20% of base = rare-trigger only).
 """
 import base64
 import copy
@@ -762,13 +763,14 @@ def agent(obs):
     try:
         step     = min(max(0, int(_get(obs, "step", 0) or 0)), len(_ACTIONS) - 1)
         thresh   = _clone_threshold(obs)
-        _detect_opponent_sells(obs, step)   # updates market-inv tracker + flood counter
+        _detect_opponent_sells(obs, step)
         action   = _weed_repair_action(obs, _copy_action(_ACTIONS[step]), _ACTIONS, step)
         action   = _safe_market(obs, action)
         action   = _premium_shift(obs, action, step, thresh=thresh)
         action   = _safe_market(obs, action)
         exposure = _opponent_exposure(obs)
         action   = _impact_slots(obs, action, opponent_exposure=exposure)
+        action   = _price_gate_sells(obs, action)
         action   = _merge_sells(action)
         action   = _safe_market(obs, action)
         if step >= len(_ACTIONS) - 10:
