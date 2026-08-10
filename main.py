@@ -45,7 +45,7 @@ _SELLABLE = (
 )
 _PRODUCT_BY_ANIMAL = {"COW": "MILK", "SHEEP": "WOOL", "GOOSE": "EGG"}
 _GLUT_WEIGHT = {
-    "STRAWBERRY": 2.0, "MELON": 3.6, "MILK": 2.0, "WOOL": 3.2,
+    "STRAWBERRY": 2.5, "MELON": 3.6, "MILK": 2.0, "WOOL": 3.2,
     "EGG": 1.5, "TOMATO": 1.3, "CARROT": 1.0, "WHEAT": 1.0,
     "FERTILIZER": 1.0,
 }
@@ -53,9 +53,9 @@ _GLUT_WEIGHT = {
 _WEED_STATE = {0: {}, 1: {}}
 
 # ── NPC demand data ────────────────────────────────────────────────────────────
-# Town center consumes 1 of each product (excl. FERTILIZER) per 12 turns.
-# After day 10 → 2/12t, after day 20 → 4/12t.
-# Shops each consume their products every 4 turns when unlocked.
+# Town center consumes 1 of each product (excl. FERTILIZER) per 24 turns (flat).
+# v1.33: removed 2×/4× day ramp; interval changed from 12t to 24t.
+# Shops each consume their products every 4 turns when unlocked (drawn with replacement).
 _TC_BASE_PER_4 = 1.0 / 6.0  # 1 unit per 24 turns expressed as per-4-turn rate
 
 # Per-shop demand per 4-turn tick (matches borg.md shop table)
