@@ -1,4 +1,4 @@
-"""MapleLeaf 5.4 — adaptive market intelligence on dual-route backbone.
+"""MapleLeaf 5.4 V2 — adversarial market intelligence on dual-route backbone.
 
 Two position-specific routes extracted from THUNDER THUNDER's best replays:
   P0 backbone: ep 91385999 (139,403 pts — best-scoring THUNDER THUNDER P0 game)
@@ -16,12 +16,13 @@ Runtime overlays on top of 5.3 routes:
   8. Opponent cash exploit    — boosts MELON/MILK/WOOL/STRAWBERRY priority when
      opponent money < 500 so we lock in revenue before they recover. [NEW]
   9. Late-game wheat bleed   — at step ≥ 708, sell remaining shed WHEAT 8 steps
-     before full terminal to capture late-game prices (≥ 2× base). [NEW]
-
-Improvements from IMPROVEMENTS.md verified against THUNDER THUNDER replays:
-  - Melon gap (#3): 5.3 routes already sell 102–114 melon (> 90+ target). No change.
-  - P1 disadvantage (#5): training data shows P0=36/36, P1=39/39 wins; equal scores.
-    Dual-route approach already compensates. No additional change needed.
+     before full terminal to capture late-game prices (≥ 2× base).
+  10. Opponent livestock counter — counts opponent cows/sheep from public tile data;
+      boosts MILK/WOOL sell priority when they have 3+ of a competing animal so we
+      front-run their sells while prices are still good. [V2 NEW]
+  11. Premium preterminal bleed — at step ≥ 710, sell remaining shed MELON/MILK/WOOL/
+      STRAWBERRY before full terminal (premium prices peak in the preterminal window).
+      [V2 NEW]
 """
 import base64
 import copy
@@ -38,7 +39,7 @@ _ACTIONS_P1 = json.loads(zlib.decompress(base64.b85decode(
     'c-rk<U2h!8k^C=wo`;<olA`>^rN&;uTv4DX5A21oSim+69DEOZ_jb7dZc3c#>FJD&jLfR$hj!m6iZfkZU0szK84>x@|DF8vmtX(=k6%yz@YBhM%a0#VJ}*xG^~-<%{eK>Q@$lonfBE&l{_(#LKmT;{!}Z<f;eY85-+%h+&zJA7f4saoS)5$mZci3V^Xrd4Y&IWG7N`6F__*1;d-(PCht1{v$>MDC>mN5ax9>;4{&08u?$g!%_yeE+e{pmd*H?f3^kH=U;eLKP*=|1Ge;w%X!|t9(9~;IuzJ2c+yFnaZ<^Ap5{SRNi^zf6t&hDf1I=f-2-~Iik>zj8!Km7Cl)0YQAzIgJN`si;iuQtOZ(J9*f<(H>$^!*S2@&0~zvd(q>I9?R&GRJ>-^sF!MH+SCmUtI<h^!NvOUiNpezv$?DcYnm@W%81tuR9FA@M!G?4qpeBz5YP$_YU9YPl)^=?bm<2{j{5KFdyLq^ym4o@a%L{p5JJ6{ya22zhT$1^U(7AlnH5ge$u>Dp5y+rU^*Uep!Ri#^)~%g?fdNXc3BPV_M2A2{!2EO9T$Nz8=cp{;}40iLvc=c9E2<F>h|Vlb9MjoA2)aR*EiRH`#MZ}o}^Cy!m)*hLB3#r%B2Pht{M(Bn4RRX_wR1c2UL0a>l?=JANl<wFX$u3d*a8<&6m_|^rk#!WH<vfIokQ>RQ@zXA@R=RhyOOuTGX~OlMfwF4ZPvy=j2{9xsR69;czHc1`76nICf=({#k;@7=PSMQ@F|R<AcuA1STKPQe}YCct5oWMp;wg(sqIiLpV&Z8G$^%;ITOq91f6WmW8d<Oi|%Gh8eP-Rc8o%DW0J6Y4Kb6Z1t!+I`fWE%;n_QAMfujx8HB>?*4kRSQih&$q(HR#a_qb^Bk0|N9H~~9X+YmJCRbc1pq3`N2-2q*umLt4bMn(S~Wd>o6ZT4_tAs6#|;?RGdn}zAtJ0Z&Lx!y>99OX-**_8i+^_tGriD53qowXFu??y4qLl%xBygfkQ30Y<>>qUOZt3CTU^kT@sd4pS}y(l?C+H>w+%j-5f;a6^5<fT<|NWzR`2EAUkV2pm`rj^ltG6?hy%V96w)e5@-)SkhO^t?wdMRA4?$14htWwle)wygf!peLzJ}KnJCO8zIF*$LqG#l`94bF0sT5YZ=WqY$-tXLRz6Qg!G~XdN>Dm8j8(pcMDNT?6RVFxSfE-Ya5T{^qdKyPc?E%MgM+hjve1dS{-SwZ;Xd!%(glN`xc3r-iI>}93GZ0u5Fqp%sI2=5WKU5|}2sozKE0p+s7^FV(3O68^iL;VGOD3*@Xf3BAyUlv>KtW5M_)D6qG=_KdL{H#3F@<#=Q&3`caG94C8;tXjrw9vJwh^Y2J`B+XL-8lOL-m0nKn&LCHSr+v?2do5a86KZqs}qV3rJ5e^`!{Mh9HMMJrR4@ufYo;{GxYvw;zIaKm)IRB6)jzv)ie`4!+)Je-8)GyOTI7vtR?dG|56&J!{bWZ_I2QWZ<bJboicOvFYDT@{GgR8dPi&6eMWbUbX?WCW!^A9F?|YR0!U&v`4Ifm%x{=@63|EG>XD3h0m;tAjsDbuklLM$|!OHXHDMHw>qJ+T=sGAYw6urB}^db%`gCRt$B|&KLA_k8C{o=>If0gw)w%wToI)o{4Ly(+daOro~FC~_*Ng$E5uir@-(^xX~E(;J}6@HNSIsHl8m@OvOtkYmnmX}Dnu^{swR+a)0=FHfYWdQU`i{w30U0r5-5<K99B8Gj9I8Qypt(ndcdPlkZrASay_u~vFxG_pwcZ?tXTKqPuVST5)Cfk_UuexuAnRGrj#uhN_<UqG)^lBoQvLMhr*p(x=>Gh^a>g3-2xRi4}bOb<Z8p4vzKfsJQKD71X~v~)~a0@s7;u<)S`nQ%Cj2c!{g%hA&KdkGC?rmv}-w;CsPKCAmJ-F4;d#@D>s>1=@D<tKs(xP?HskJX`RcBH}C1*FB~naPSrOldCFvwih2wuKsJDyCH)C8WE#t&V5_z$NWO=j0i-g`yf`e3VuoeP$pT|d;yVnNbkmzom4m~H>&!w%ny0W;LCxAtjC0oto}v@s9W7~vF$bc5ka`}jX6D|_NaDrAY7=4HIy?-fB~4r~kxwKlr69}mcLRvcxYk5%Oc7CJbTl2xdTJ()(08i~NfTselndJu9kZN@075O)2wa#$iAM)Y2gu(#Ux}p^4Of6s{*Tu;fBu5(;{wU@I~({fo2w>GLH){!d3aDSt50xEGk-ouF>|fPA&>y1h&UG_cc%`ZG1|keGNyGlbo4=I|1j*pX~{%*v{seSf>anJlT}Oh?*`&!nsGv6vxy5tW?-wnYiC%`;_=_9$U*1~a&auy?25$;lp2!wvzT>R5Sp)9xnO}@Qb4RmHrl@2EISFq9mA4VumpRQE06^mc>MeFXtV^);%HW1J3=pKA(os}2`)@_s$BUa1rm?Hnx#SgR8ny5&p?<b*PpoC%p?a}1dccJT{isTC0>ZJvd*2N!hyxuInS7F5@sNgEwLl{x<m40w11>{;Ac^Q002&8t0hFCYn{t)p*Tb++p?_dDQ|?JRD^#a0FdU~OW$dVYF9(NTvn3J{p<~KxUBJpNMPlMkGbp+AUF^OWq00oOMY;Qf=9sBwE*?V!<)fw{;jm7s~~JlyeqV9L;ottT*<>CHmI?02G6M2Q?O632h5EyxgcbUUKLI}qmRg<(7U@$)k@esZT(kwygul|0W`}*nb5VL#sj8vIQ+0vs~}f?472krat|{<hA-zhs#!AC$QjUFA1&YD_C?04ETT0pkFN9}tq<Z{9I{JNwlNf?Vh|vRf_&B~T4`xgs5ix7wOghFkjM^PZFnod4MmH5{KPI?KG1TNS?6S*bIFdTqzI++7=e#I0wS>zi0E#E!mg_0oM2(wH{$V;^9LOsAS_VwLrg+OrpKRM+!|=XC1>#>)MW3%AF_i<JHBLh0%h;CM<6TBqW!PSomb!;zwZgV(y(rZ{jPkQ;5h_u5AEgCYlRV92kiE>`&vjv<k%owUT-=n_$lDMM@m5tZRJzqc^bmk5q%p2R3bGQ<8Q9GEg=W318%;SokLJuc-exaf$$}B!e$57i;0j6Xc=*W%TNji*sDY#5~K*p>_3vaZWZ2n2R=3DU5E)#6Y(BJx$#oo`pn9TG`ANUn`CtW<r2lS0RyJTdhW;zqSgAM`zn<~OG^Q^ENwAx)o@}I&s!DswvY2pQmv5JoZ>V!e)|FZLAO$Z*MQY!qd%c=z(_9y!72hWd?T$8++DwA{z7;TCpD`R6w6!iA`}^uLG_f(+A#{pjFg%b)Q@3Rz&x>#`Y{XL2D#bfWtzPdqFOdMyCk-I=Jg835XxsCDf7ovmy1`H7R!7W!ez<(MX!4&)N41PCZ<c{XSs6!XDJzj9B1AapA|36#-tmB2rhZ0S81M@*)KE^YjTKk_M%qf!^B%5`zm0<yxEu*O%{SQB8%?BZ59&SSgnXT8;5nc``q!XoK4~3OKX(~QtIIe|6&SMivUFGUgj~2QLeo4SDi#Qk-Gl)(W=OJ4=5OV7A&@1$D<b<u$=V1lYj#H8ptz<X(29$veAeVf}4Uqi3kB|iKktnTpKc?E--vAs(1IGY5}AGKFzELYp`oIwPs>t_BT=LVWwe-LW3vz-09Ok4vO5vsM10TkP%3(=saq{7LA`zO}(m=>_j6jL8`6tDj|B3GAdPSM;^MJV0ZHS-vFa1wnBE+5WAL`S|BJ@uYZ)GoQ_iSedT(ljJh`7hNe@iGfCI~D92g7YProE?Wk6QL$O}4_u6XdJ_M_tWqL6)t-u4%Qk#F-C3&7U&r`WfxZH{@9#Z1z#Ns4MTwQ_DY7?Zyl~GHwi2FQqi5=VmTZ-}|s>7zm%;q{eYJl3}J?#1(1YGb^Ng7<A7P(Q4kiRCCDWDi}rUdBv04L=ubekmLvX6gvq5^{pL@1>0b<kRy3{Dqcs00>ut>-K#iX!9#RGcx&(Z%&lGGX@hftq*63{C>1oIRecnQEoFy}`_e61nX3*(=Ad<I=fWwRMLZi<y9d!<!eBJLVl4o;HarkiKo;ldMs%y5aCj3EBxT`#LE2W!OxPnJGZe643{x*lcpyGWd15LlDx_HD{a^ESaRmViPDnsd3@B^m-*5NYGm$)#C15w1%ZfDlu_wc-Hp{CKN&Z<*Qox5~y1aqOL{Jh5$yHupF*I_@Yfdbv9=CcOtFjR)m1^A%IU3-=&$S4>DUex=mQq?B9mUTr+xQBsENL7euzVgpL8ZS3A>mnV<+k;a!uePqUyRW&rYKNq`QP=A_ism=XcTgw#=v)l|upb!cN>G`z8R7Aw`)%{m*?Dv4sw3^HaKS7PkXFl*I>H92QQiv8B90>AynDCn<;V$Rw&Ih69WhP%il&oP#(^6d<RJhIa7F5RAyGcKB`M?C}TT}NeVpwvgea-6fKe?6Sed9A3a`%1%zwf9diCxMwAFAnOC)T^Zg2(+EvD+=4T#3YF(NAZM2DW906lzHC~!<X?8@FpPjx?-$v`;}7M58gYS#aOKeQ}epy^K5)CJbkeL>JENFl$%53#*=_<DV$I=bL7n;=_vd5#<Ek0R-9_PVN>WnXg4R1<F}K*Ty}GGx+5N^0Bhl)gG#zlkhg+^dE&V=EaeB5W$L4__4TQ}V?-yn^?1TCz5onkoRF<PC%X5^GI^ijz%u*7V`hGEYzgGhgldQ&gEW?7Avz1Rmf^>>_2sET-M01laUI^S!e`0oyLL*zS$~iUzX;klmzA&G|2d7?55P~IRT@~g^d%-iqz`RGQ~}b=ip@x>mqCJ1P$34RQMKR1%cmVsS3<3$L3esWM@GC<Z3xPUf(ES8=K)g(qD#b{%c752i5^|?=gW{fi9Qug7uWBm1cXuxbwbyt1bY5TNd?V*8ux@Kp+=ZyyCs*-w|U1=4e^F_R!+W&fmwyFqi0su94m=%^)1;9m>@X5>()m?k#z}bmo!>+OAG3&N3a3r?^-uCk<92S{p|Z0!Eyvk<mxmnJWzC?jR%+~Gn1+WV0wb&PDdPpSJZ!8W5@W**aAMDRe#ic+rCGEwvD#l1Z<OJL<hi=kb%-F7O=a7=-=R4G!hz*D!3@x-b-*4(ZopmU4q2&jEWk0{fIDC_gmR!fU!aof?1YRuiNOlbXa-k0(3?_b3{0=+qU5wGjfPDH=UcEX30B*Cfm82siMJw!7D9KPs7(2>G{w?>&drf$n=QMczj9Bo)(eOvcb%R#nNFi5l(#@KPBgTDwv!yEcFS!C8&`d&Re2vrVBAlYl11Pc)>)Du@!252g<YNOA6%1l>XH)ue580BDJ6-4>yah?DBN<4r<~({s<i-oPiXbgN_+>z@#>k3a_lLB%qB(A+0U{)@k@ki>)Ai>oVuaHttK=X_m#_$O`GmeIkLbk?kw>Yz;0NNe;)_DihI6BJc6ZtgPxy8ZNpzpPn-skaZ(e0^$n_Fwp`%C=Dnp8G6XKxhO8xm*63iqf|Yet;i8f@twzKTFQK;SL-X%9qy=VmR#QNTIe&$QI6BFTCSV5LFt4p{)r69#hPt~MbrY?;J`^?6y>Nj-Ml-AvVy?|6o_i;CUH71%A?DQ&^k&4RJ7LK2MsES`^EAre}@t+!8GMmuB`?EZ6hT?!gfXwQ;9t_lDc-<*e9Qf)D@7DZ;jk;Bwz1ucvqr5gY^~US~;4kv3|1+sbh~9ALC3)zXB$n=)(&XIXar%i_#{wk@ZJAqX19`-b?F*KSiG@6jTX$Cl6tmS5N{AVlKea&PDH1efKkdT-t~&O@a%VxHl`vqWc;Q6&jK7oI8sB;ioIEIZ~>vunQEfP0fn8+YkemR10(=jZuMswzUBggA^TTlWxKyeacN}jG;beHcIo{+Fd-I&&`o?Ze@F$oEwa(w<pev2b!LVVB;cAr|~Zhi6&*6<ICdGV!G43`%ViWM6nZ|WfQH0k9sx2K_pz#ZF-WDI6WSjnE<rS)U0rr!dgst&Ota4n2Rq|aZEjo{N44R;yjH}8v3${h%rNgMZ~Obs61{z8x~<|6RCoSrLc`6j*cW8Bva6HsaCvx&Fh)>E7HKITn`URN=T%|DwTo?*EBjG?Per&##AKTOb?04deWlw%(0XeS+es*sdRK|Xe#N$Ps3i?)UXt=Ru#-6yPk+LkURBc?tt~YiUd!1FQ~$7g@r}Umo4v4eev1O%=R^Aw@^`OMoiF<k=ZVlm1;Xh6Xy!c5lnWbt3b>G%{#)ec#qF6Ln5Vz$2W$`!vXU&8q(xF0k%*0z@e%+PgOwxr}H=p4+e5TZBW)NEhO-*)OTEO0GfO*dfC|t-ZJboKglX0m`oKWSZ_%rwqiM2a($oghbchXlTWs`eVdP)8b7`b=N{|qHv#h<V^pVSuLAzd%InTT=p;e{8|%-3jxC6Nw2ntEP}T+-5UeWx+u*(<v77JRGAlL!G9LSX8T(?{R48!nRjF;V+m%pBt<vDC<b-HV=*A-?j3tr>y80q041HL5@{Nta6uYYtx;WHK&A>neHvDyoZHD99&CTt5&7s)GtAxH{+ahSWmHg7%xN_=Nq~p%^BMg)wFMzuU*uy+`<A#R*Wg|>$ScQ@HO42-XgR5|9@QKJEQ%C#>moiU%)pHmDNZQaF-uX7!B9m%i!x(7<L><!$_r&|2ft3R*2)r&!*QxeM%X0caLxHG=X>>7pGpe<_kdIH+oP(QCBrY(GijYIFY6CM<byHnt+R=yTvlj8eSf0~=b5^MFGbL7XN^MgtHrW3aCr*?Xr3IY8r=FdRlIB}gXRxiCDcHwL*c#glH%+DP(qWyJlk>$KnSua-I7iwQdA0;&SNar*30YH5mP`Z4*hWFF5oJ^ZyZ0t6MJa-sphf^8TAWgvkHl%zIo8G&bm2LH?jeh_#Mrm^t^ZcVxySRo>aN+ny4_9*i<&`MO0t`GD9aT{V6+KGob)WCz;1%=*hjl7_axLHTzYd2o=A+f+18;jMoeOQA3;CWm#vqnmEz+8@&xeQ#3*w3`#q7TuJG&L5s^JxR<dXDr2MRx`o;?P8U~&usC9CK!;-K$vD4^17x_3PoUpNvL9Y2C#dgw^A4*VsGE2OmrQ=qOc6p{++C)>zU`pf_pggm^@f-4Zjk$#6`%l+5?|yy=|L#8#@w}*v%$D->a;*RIKV0)_vkL{YKApC;BpUDWX+zD`GOVQxEuEB9c@s)jGbgPA-R&TFJ>=?*2<~z=AW<_9PnHyDCb~DhZ-(4t7L7V^zH^ztwbKP(H#*$WTW-kH3LC!I0TG{34AmiT3jSJiJCzaRaYCTmSKQ-r9=Rd!oCz2CDea}X?{t`G1*$rckT3==OPN&=z8ZG)0VGxIwhHK=A!DW1)zrT1vhcY_n+xrZ(}s~T!nSfI=t4x^zNMa?O?<=k>~iC!vrsB$Tb4r@TG|oApjtU~Zl<6(;=H+e2O1zYD`xKZot(_O6Z^JBRv)i{mH7XP`BZQ@%77Csw|g|1RIK|2^S*hbVYr%go=V_bKC7-CJZJfkujcB7m@6t{5;1GA_It3O)wXZ4Q$Ghu44hDra7N-x#gHG=w{nz*m}w(4A1T_EcW#6Mjt|yoHXxd6BG{0vP(fo+gTI2(veH%3$8?HR^iXz8AtMDvDr#53SNn%x#Fh5j>{V6W-gFTnG+F~-U>WU&vd`}KLYrboh%H72=->rmshEQk1|{j%$0VaF13R%qXv<t_P(gcB;wqSuRa#9e7!<si;=VS6dh$E2o;*s00Ws+O+m=r@ffJ{_nhma9bmBZPYw!h+)NkbZIulBblQq+nCu~}nbu^Ra;C1vglpJ^{twLl_b+$CCNUm5SN3FhW!qi}+tDuNH{na^8s@XcP?pNFe$-W`>QOpvtXfcpc7G^Invta~wX4Y~qDIimA&x;a=gupm$cE%8Zh_U0=$8&j%C^|?c+iV|V3$+hz2;8Os$h9TrRrw>Tl6yqU{A~xqF$K5c@S4O4XyRIy5f|%Y3A+MGTQKXU8ca~$<O-^8)Ru^hOp<eGjSb5-`Rzs$$NQILFuFZR>~9j@V_=;TjPfw;17?zRnIL>d#gnjP<)xo?o0u$%i`>jZF6m<^k&Sw6C;<o7(&_>Rjb_QF5RG()d_!*))U@O&80Zi<XGOxq%I!qwZ-xcTK85_y!pU&aykhTG)-N~FKs0g-?%Z)UHL#}6s3rfq9Kh(KiI%~)+fdHFNr17bt7n1qv@VdIm|jf~4<-n7i7uakt(qnh6#i-^@Ka0_M6F{iEo_88=^#ZNg=@3iB6OU&%_o6b!o<M4-{FjxxGG{7@Kpuz3?UUM$yO3kc0988JAK=52cdMApc^g!DfFw8?_}A~E+$fBWLlr{{<BRC(kx2C#B%YrQqpg<iiRzam!Vi{yM({|I>4~p2PL#+-Xy>&>COW88DU4T&L8A3W;`-=Q{bl{QMEiW__?0tI5-QU$7LW>qpI0LLlAE*harf}bLLP$<R?SdS7L#7IE-nb+jpf8V&Q6E*ljl<kI?QKtuNQRewC37b6WVORR(Gs_!1F=ynw;*t;rYJX9R&<v!0c11cAL?){YLm&^hcou2YyUqG}C70)9NyD|}Grp21L}eJ&~l3Ql4!vCz}RNBlFp<AEW9t7^hn_~0siXn}WtZ8i(O7;MN&Z`w*H+H;GAoyh@#0@Ce~p>g0bUX~YvMse3vb@f}s=&IbmoG@`6k>Zfh$oXL|OiOE0N)>-J0PjKM^VM6Ct55rIpNG5${B7yI%P>g7@$@A$9hKgcPJBa!nitq?gf%(!Ik6O{Ue9eadJ#!|g1wGr+LO-MT0CDc6HnV51)HuOd9-ec#>~31+d~sw2OJwnD2nDj01K$6Z&kP?flP(2paTE2*E{c<Ev{3XIDync?PIu~Wc$m%v=R2Y&WGDlk(y@oM43;Sb~23hrtbkdu7)bB6^9!|bsJz|K`kKoZ?<Jr6s&|oL?Km5#b*^ntYgCmv9=Q&zah#UhLmnt_&{PvWjQeh7|E~S%KAt_;|Je)nEgpOCOpKngtuS_POm|1qNMVV|ApN~4|rnsYSp7BbpuUJH-{I%#+Zz!mTR^-c?mp3Y25_PMD`u*fsr4mBUn$$+7e)It2fS6z3nYA?E!*yMZ=Vr@+F#fJ%derqm5UR?3E!nJe99kl6LnZoxa49KIH@HAX0btuYi)SYY<$&B$>Te0Q<C7oqDG(?#bKLDoklkMI5pje(wTeHCUV~5EHz9inmf%6L<)lEqqqo9B;-t#4PR!TwWwnO9b2;HdLH0E!}#Jw-^u>Mf#RNQI@<uQb*GW!H~WrAmy^Po4;cO4+yR9Mglprn`qq<lpW>qyECaiC_+i<P$^BGcqzzD>v-+lw?hI@w6Jq%NV;HO*SepUB$#%Ni9U}Psf<@(gU^Z0k}zgMCsFs3<HZ}cSkX1YXSEWLX@cS?aY*F381nQzjeZIb@pX(eBsp|OFsqZT+$OCgdhjWZbWUg+w=X4{y(+ND96kvmsC7>vUs>g`lXpPDBq6pg=_MnabFPO$MbCXyptJeh@66>+Jrdg~5PyF64G_zkq@EQExwZStt%5k|=G0Jh)oK8@-6-VaE^^JP8Jdpr@t@?5e`%TugK4-zOr#lgX--LfU$J3TEJ2llh=ze{3t!h;maMlKkF4kG5cp#Se)4e})CO4|F@%iONs*{9BYNBltARf_0w%JQJ;zsKc!NUMfdIN<(9}jjZuf}OgLAE0Q^T4K`mJrX&f&p;l{TIVd5tMXw#uL?Juh@^Pw=)YO_hVRHaASIDKc#Z5b%UcoWwwYZTk!|jv6gy_V6PIxD?lE9TYeyPG&hX)eaJ^?uD$?U6qS_FzG`#XvsTF)z!u#<jf~uV<8O<tj-EF2o5=`i39JTG>@(lhf1t6rf48TCk%VvJRZo{7$&|O>Uo?xa~Y*>=@~Ms!i~jvnonNI236eIDyfP)Yi-H*gxCcb{%K`sQK%D&x~-km5mgd>Ty#b%1V1Ii3o1&e46Inowyjn}X;*5LRci{V|63@2QjBagrF=`?hGNHrS}VvyOX4|Moq%K9!ZNR{X~mO@W*Rx|TTWlV^+18$LBQwhvH;x%NJT7(3Wh5)D4QcOvngub5$0kn=3_;60d*mZuTx7i+y+W+&==uYL0=JRUq{BAiQd{&!v~%>9)2oyVJ|u~lV_^%jkYCi@~f2FFBKV_iWoEbGBNy_kg8i517IlJY$`atm`_b*Ff6|wUTa_)B8h3qd%9e@<{X(p+Zr%PdE*F%G^I;e*hsc1Qnfoic2h}Ju3KDV|G0{aOyeM?8#l{~-z;6AYcWsDHP%#Rt0*~L#F`fLm5QG<jsTD@*qul%iSb*Db|4xV#;+3dl2j{)VL3@3PQ^+Z9p(`~E^+LGz=(vT(c=p4ARJ9FL1G7U!G5vDzCvHUYIQ6Cmy;-rJU3g>`I=iGhw~NX05sa>ZY#|N&(QxntZNIk(cElFWjeiPT<I&Xmx+U-U9^}qu&3xH5r86%Zmu0Cku?(21aH;pqe&k)xT85^W1Rj`f1H^mP~knWp~oY(hR$2Xel!Bi(K?v^XTe6|0w5-D%ibAukhUO4tu`P3Jm);Q^wjUC0*{%b#w2ZFHk_oWwIA?lz8*-Yv|_xVjr2|3h@{0CfZQb=?ibwe^M3${daWq'
 )))
 
-__version__ = "mapleleaf-5.4-adaptive"
+__version__ = "mapleleaf-5.4v2-adversarial"
 
 _PRICE_FLOOR = 1
 _DEMAND_ALPHA = 0.25
@@ -99,6 +100,14 @@ _CASH_EXPLOIT_MULTIPLIER  = 1.20   # Boost premium-sell score when cash exploit 
 
 # Late-game wheat bleed (Improvement #4)
 _WHEAT_BLEED_START        = 708    # Start selling shed WHEAT 8 steps before full terminal
+
+# Opponent livestock counter thresholds (V2 Improvement #10)
+_OPP_LIVESTOCK_THRESHOLD = 3     # Count opponent animals of one type to trigger boost
+_MILK_THREAT_MULTIPLIER  = 1.30  # Boost MILK when opponent has 3+ cows
+_WOOL_THREAT_MULTIPLIER  = 1.30  # Boost WOOL when opponent has 3+ sheep
+
+# Premium preterminal bleed (V2 Improvement #11)
+_PREMIUM_BLEED_START = 710       # Start selling premium shed items 6 steps before full terminal
 
 # Price-floor guard: debate determined that a 50%-base cap breaks capital timing
 # (SELLs fund same-step HIREs). Only gate at the absolute $1 floor: those sells
@@ -476,7 +485,33 @@ def _order_score(obs, configuration, order, ctx=None):
         # Cash exploit: boost premium sells when opponent is cash-constrained
         if ctx.get("cash_exploit") and item in ("MELON", "MILK", "WOOL", "STRAWBERRY"):
             score *= _CASH_EXPLOIT_MULTIPLIER
+        # Livestock threat: front-run opponent animal-product sells
+        if ctx.get("milk_threat") and item == "MILK":
+            score *= _MILK_THREAT_MULTIPLIER
+        if ctx.get("wool_threat") and item == "WOOL":
+            score *= _WOOL_THREAT_MULTIPLIER
     return score
+
+
+def _count_opp_livestock(obs):
+    """Count opponent cows and sheep from public tile data."""
+    seat  = _seat(obs)
+    opp   = 1 - seat
+    farms = list(_get(obs, "farms", []) or [])
+    if opp >= len(farms):
+        return 0, 0
+    opp_farm = farms[opp]
+    cows = sheep = 0
+    for row in (_get(opp_farm, "tiles", []) or []):
+        for tile in (row if isinstance(row, list) else [row]):
+            if not isinstance(tile, dict):
+                continue
+            animal = str(tile.get("animal", "")).upper()
+            if animal == "COW":
+                cows += 1
+            elif animal == "SHEEP":
+                sheep += 1
+    return cows, sheep
 
 
 def _compute_context(obs, step):
@@ -498,7 +533,16 @@ def _compute_context(obs, step):
     )
     cash_exploit = opp_money < _CASH_EXPLOIT_THRESHOLD
 
-    return {"wheat_arb": wheat_arb, "cash_exploit": cash_exploit}
+    opp_cows, opp_sheep = _count_opp_livestock(obs)
+    milk_threat = opp_cows  >= _OPP_LIVESTOCK_THRESHOLD
+    wool_threat = opp_sheep >= _OPP_LIVESTOCK_THRESHOLD
+
+    return {
+        "wheat_arb":   wheat_arb,
+        "cash_exploit": cash_exploit,
+        "milk_threat": milk_threat,
+        "wool_threat": wool_threat,
+    }
 
 
 def _rank_sell_slots(obs, action, configuration, ctx=None):
@@ -547,12 +591,21 @@ def _terminal_liquidation(obs, action, step):
         if _is_sell(order):
             planned[str(order[1])] += max(0, int(order[2]))
 
-    # Early wheat bleed (steps 708–715): sell unsold shed wheat before full terminal
+    # Early bleed (steps 708–715): sell unsold shed items before full terminal
     if step < 716:
-        avail = max(0, int(_get(shed, "WHEAT", 0) or 0))
-        extra = max(0, avail - planned.get("WHEAT", 0))
-        if extra and len(action["market"]) < 10:
-            action["market"].append(["SELL", "WHEAT", extra])
+        # Wheat bleed from step 708 onwards
+        if step >= _WHEAT_BLEED_START:
+            avail = max(0, int(_get(shed, "WHEAT", 0) or 0))
+            extra = max(0, avail - planned.get("WHEAT", 0))
+            if extra and len(action["market"]) < 10:
+                action["market"].append(["SELL", "WHEAT", extra])
+        # Premium bleed from step 710 onwards
+        if step >= _PREMIUM_BLEED_START:
+            for item in ("MELON", "MILK", "WOOL", "STRAWBERRY"):
+                avail = max(0, int(_get(shed, item, 0) or 0))
+                extra = max(0, avail - planned.get(item, 0))
+                if extra and len(action["market"]) < 10:
+                    action["market"].append(["SELL", item, extra])
         return action
 
     # Full terminal liquidation at step 716+
