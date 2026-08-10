@@ -1,0 +1,995 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap");
+
+@font-face {
+  font-family: "Zeitung Pro";
+  src:
+    url("https://use.typekit.net/af/37ff2c/00000000000000003b9b2a25/27/l?primer=7cdcb44be4a7db8877ffa5c0007b8dd865b3bbc383831fe2ea177f62257a9191&fvd=n7&v=3")
+      format("woff2"),
+    url("https://use.typekit.net/af/37ff2c/00000000000000003b9b2a25/27/d?primer=7cdcb44be4a7db8877ffa5c0007b8dd865b3bbc383831fe2ea177f62257a9191&fvd=n7&v=3")
+      format("woff"),
+    url("https://use.typekit.net/af/37ff2c/00000000000000003b9b2a25/27/a?primer=7cdcb44be4a7db8877ffa5c0007b8dd865b3bbc383831fe2ea177f62257a9191&fvd=n7&v=3")
+      format("opentype");
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Zeitung Pro";
+  src:
+    url("https://use.typekit.net/af/37ff2c/00000000000000003b9b2a25/27/l?primer=7cdcb44be4a7db8877ffa5c0007b8dd865b3bbc383831fe2ea177f62257a9191&fvd=n7&v=3")
+      format("woff2"),
+    url("https://use.typekit.net/af/37ff2c/00000000000000003b9b2a25/27/d?primer=7cdcb44be4a7db8877ffa5c0007b8dd865b3bbc383831fe2ea177f62257a9191&fvd=n7&v=3")
+      format("woff"),
+    url("https://use.typekit.net/af/37ff2c/00000000000000003b9b2a25/27/a?primer=7cdcb44be4a7db8877ffa5c0007b8dd865b3bbc383831fe2ea177f62257a9191&fvd=n7&v=3")
+      format("opentype");
+  font-weight: bold;
+  font-style: normal;
+}
+
+.poker-renderer-host {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Zeitung Pro", sans-serif;
+  background-color: #28303f;
+  color: #fff;
+  overflow: hidden;
+  box-sizing: border-box;
+  position: relative;
+}
+
+.poker-game-layout {
+  width: 1000px;
+  height: 1000px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Use absolute positioning so this element doesn't affect parent sizing.
+     CSS transforms only affect visual rendering, not layout - so a 1000x1000
+     element scaled to 0.5 would still occupy 1000x1000 in document flow
+     if using relative positioning, preventing the parent from shrinking. */
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform-origin: center center;
+}
+
+.poker-table-container {
+  width: 100%;
+  height: 400px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.poker-table {
+  width: 900px;
+  height: 400px;
+  background: radial-gradient(
+    43.33% 50% at 50% 50%,
+    #20bd48 0%,
+    #0a4018 99.99%
+  );
+  border-radius: 300px;
+  position: relative;
+  border: 15px solid #5c3a21;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  box-shadow:
+    0 8px 12px 6px rgba(0, 0, 0, 0.15),
+    0 4px 4px 0 rgba(0, 0, 0, 0.3);
+}
+
+.muck-line {
+  position: absolute;
+  width: 780px;
+  height: 300px;
+  border: 1px solid #9aa0a6;
+  border-radius: 240px;
+  pointer-events: none;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.players-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.player-container {
+  position: absolute;
+  width: 100%;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.player-container-0 {
+  top: 30px;
+}
+
+.player-container-1 {
+  bottom: 30px;
+  flex-direction: column-reverse;
+}
+
+.player-card-area {
+  color: white;
+  text-align: center;
+  display: flex;
+  justify-content: left;
+  align-items: left;
+  pointer-events: auto;
+  flex: 1;
+}
+
+.stack-cards-wrapper {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  width: 100%;
+}
+
+.player-stack-value {
+  text-align: right;
+}
+
+.player-info-area {
+  color: white;
+  width: auto;
+  width: 260px;
+  height: 200px;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  margin: 10px auto;
+  padding: 20px;
+  background-color: rgba(32, 33, 36, 0.7);
+  border-radius: 32px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  border: 3px solid transparent;
+  transition:
+    border-color 0.3s ease,
+    box-shadow 0.3s ease;
+}
+
+.player-info-area.active-player {
+  border-color: #20beff;
+}
+
+.player-info-area.winner-player {
+  border-color: #ffeb70;
+}
+
+.player-info-area.split-pot {
+  border-color: #ff5c19;
+}
+
+.player-container-0 .player-info-area {
+  flex-direction: column-reverse;
+}
+
+.player-name-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin: 0 60px;
+  padding: 5px 0;
+}
+
+.player-thumbnail {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  background-color: #ffffff;
+  flex-shrink: 0;
+  padding: 6px;
+}
+
+.player-name {
+  font-size: 24px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: white;
+  text-align: center;
+}
+
+.player-name.winner {
+  color: #ffeb70;
+}
+
+.player-name.current-turn {
+  color: #20beff;
+}
+
+.player-stack {
+  font-size: 20px;
+  font-weight: 600;
+  color: #ffffff;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+.player-stats-container {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background-color: #3c4043;
+  border-radius: 22px;
+  padding-top: 4px;
+  color: #e8eaed;
+  width: 260px;
+  height: 36px;
+}
+
+.player-container-0 .player-stats-container {
+  flex-direction: column-reverse;
+}
+
+.player-hand-rank,
+.player-odds {
+  font-family: "Inter", sans-serif;
+  font-size: 14px;
+  line-height: 14px;
+  font-weight: 600;
+  color: #e8eaed;
+  height: 20px;
+  align-self: center;
+  text-transform: uppercase;
+}
+
+.player-cards-container {
+  min-height: 80px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  width: 44px;
+  height: 70px;
+  border: 2px solid #202124;
+  border-radius: 8px;
+  background-color: white;
+  color: black;
+  font-weight: bold;
+  text-align: center;
+  overflow: hidden;
+  position: relative;
+  padding: 6px;
+  box-shadow:
+    0 6px 10px 4px rgba(0, 0, 0, 0.15),
+    0 2px 3px 0 rgba(0, 0, 0, 0.3);
+}
+
+.card-rank {
+  font-family: "Inter", sans-serif;
+  font-size: 32px;
+  line-height: 1;
+  display: block;
+  align-self: flex-start;
+}
+
+.card-suit {
+  width: 36px;
+  height: 36px;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.player-cards-container .card {
+  transform: scale(0.8);
+}
+
+.player-cards-container .card:nth-child(2) {
+  transform: rotate(20deg) scale(0.8);
+  margin-top: 13px;
+  margin-left: -17px;
+}
+
+.card-suit svg {
+  width: 100%;
+  height: 100%;
+}
+
+.card-red .card-rank {
+  color: #b3261e;
+}
+
+.card-red .card-suit svg {
+  fill: #b3261e;
+}
+
+.card-black .card-rank {
+  color: #000000;
+}
+
+.card-black .card-suit svg {
+  fill: #000000;
+}
+
+.card-blue .card-rank {
+  color: #0b57d0;
+}
+
+.card-blue .card-suit svg {
+  fill: #0b57d0;
+}
+
+.card-green .card-rank {
+  color: #146c2e;
+}
+
+.card-green .card-suit svg {
+  fill: #146c2e;
+}
+
+.card-back {
+  background-color: #2b6cb0;
+  background-image:
+    linear-gradient(
+      45deg,
+      rgba(255, 255, 255, 0.1) 25%,
+      transparent 25%,
+      transparent 75%,
+      rgba(255, 255, 255, 0.1) 75%,
+      rgba(255, 255, 255, 0.1)
+    ),
+    linear-gradient(
+      -45deg,
+      rgba(255, 255, 255, 0.1) 25%,
+      transparent 25%,
+      transparent 75%,
+      rgba(255, 255, 255, 0.1) 75%,
+      rgba(255, 255, 255, 0.1)
+    );
+  background-size: 10px 10px;
+  border: 2px solid #63b3ed;
+}
+
+.card-back .card-rank,
+.card-back .card-suit {
+  display: none;
+}
+
+.card-empty {
+  background-color: rgba(0, 0, 0, 0.0);
+  border: 2px solid rgba(0, 0, 0, 0.0);
+  box-shadow: none;
+}
+
+.card-empty .card-rank,
+.card-empty .card-suit {
+  display: none;
+}
+
+.card-highlighted {
+  box-shadow:
+    0 0 0 3px #ffeb70,
+    0 6px 10px 4px rgba(0, 0, 0, 0.15),
+    0 2px 3px 0 rgba(0, 0, 0, 0.3);
+  border-color: #ffeb70;
+  animation: pulse-highlight 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-highlight {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 2px #ffeb70,
+      0 6px 10px 4px rgba(0, 0, 0, 0.15),
+      0 2px 3px 0 rgba(0, 0, 0, 0.3);
+  }
+
+  50% {
+    box-shadow:
+      0 0 0 3px #ffeb70,
+      0 0 20px 8px rgba(255, 235, 112, 0.5),
+      0 6px 10px 4px rgba(0, 0, 0, 0.15),
+      0 2px 3px 0 rgba(0, 0, 0, 0.3);
+  }
+}
+
+.community-cards-area {
+  text-align: center;
+  z-index: 10;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.community-cards-container {
+  min-height: 75px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  gap: 8px;
+}
+
+.pot-display {
+  font-size: 30px;
+  font-weight: bold;
+  color: #ffffff;
+  margin-bottom: 10px;
+}
+
+.bet-display {
+  display: inline-block;
+  padding: 10px;
+  border-radius: 30px;
+  background-color: #ffffff;
+  opacity: 0.7;
+  color: black;
+  font-family: "Inter", sans-serif;
+  font-size: 20px;
+  font-weight: 600;
+  text-align: center;
+  height: 20px;
+  line-height: 20px;
+  width: 240px;
+  min-height: 20px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.bet-display.active-player {
+  opacity: 1;
+}
+
+.bet-display.winner-player {
+  background-color: #ffeb70;
+  opacity: 1;
+}
+
+.bet-display.split-pot {
+  opacity: 1;
+  background-color: #ff5c19;
+}
+
+.bet-display.all-in {
+  color: white;
+  background-color: #b3261e;
+}
+
+.blind-indicator {
+  font-size: 0.7rem;
+  color: #a0aec0;
+  margin-top: 3px;
+}
+
+.dealer-button {
+  width: 36px;
+  height: 36px;
+  background-color: #f0f0f0;
+  color: #333;
+  border-radius: 50%;
+  text-align: center;
+  font-weight: bold;
+  font-family: "Inter", sans-serif;
+  font-size: 30px;
+  position: absolute;
+  padding-left: 1px;
+  line-height: 36px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  z-index: 15;
+  pointer-events: auto;
+  border: 2px solid black;
+  outline: 2px solid #20beff;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+}
+
+.dealer-button.dealer-player0 {
+  top: 360px;
+}
+
+.dealer-button.dealer-player1 {
+  bottom: 360px;
+}
+
+.step-counter {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 20;
+  background-color: rgba(60, 64, 67, 0.9);
+  color: #ffffff;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.hand-counter {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  z-index: 20;
+  color: #535965;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 40px;
+  font-weight: 600;
+}
+
+.chip-stack {
+  position: absolute;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  z-index: 12;
+  pointer-events: none;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.chip-stack.chip-stack-player0 {
+  top: 60px;
+}
+
+.chip-stack.chip-stack-player1 {
+  bottom: 60px;
+}
+
+.chip-stack-chips {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 8px;
+  position: relative;
+}
+
+.chip-denomination-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  position: relative;
+}
+
+.chip {
+  width: 40px;
+  height: 40px;
+  position: relative;
+  margin-bottom: -34px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+}
+
+.chip:first-child {
+  margin-bottom: 0;
+}
+
+.chip img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.chip-stack-label {
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+/* LEGEND */
+
+.legend-blinds {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 280px;
+  background-color: rgba(32, 33, 36, 0.7);
+  border-radius: 8px;
+  text-align: center;
+  font-size: 18px;
+  line-height: 35px;
+  color: white;
+  z-index: 100;
+  margin: 10px 0;
+  height: 35px;
+}
+
+.legend {
+  position: absolute;
+  top: 55px;
+  right: 0;
+  width: 280px;
+  background-color: rgba(32, 33, 36, 0.7);
+  border-radius: 8px;
+  color: white;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  max-height: 200px;
+
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  ::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.legend-title {
+  height: 45px;
+  padding: 0 10px;
+  font-weight: bold;
+  border-bottom: 1px solid #555;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.legend-leader-info {
+  display: flex;
+  align-items: center;
+}
+
+.legend-title-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  margin-right: 8px;
+  background-color: white;
+  padding: 3px;
+}
+
+.legend-body {
+  padding: 10px;
+  flex: 1;
+  overflow-y: auto;
+  font-family: "Inter", sans-serif;
+  -webkit-mask-image: linear-gradient(to bottom, black 85%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 85%, transparent 100%);
+}
+
+.legend-table {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.legend-row {
+  display: table-row;
+}
+
+.legend-header .legend-cell {
+  font-weight: bold;
+}
+
+.legend-cell {
+  display: table-cell;
+  padding: 2px 5px;
+  vertical-align: middle;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.legend-cell:nth-child(1) {
+  width: 20%;
+}
+
+.legend-cell:nth-child(2) {
+  width: 50%;
+}
+
+.legend-cell:nth-child(3) {
+  width: 30%;
+  text-align: right;
+}
+
+.legend-winner-cell {
+  display: flex;
+  align-items: center;
+}
+
+.legend-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  margin-right: 5px;
+  background-color: white;
+  padding: 2px;
+}
+
+/* FINAL WINNER SECTION */
+.final-screen-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background-color: #202124;
+  border-radius: 16px;
+  color: #f8fafc;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.final-header {
+  text-align: center;
+  margin-bottom: 20px;
+  flex-shrink: 0;
+}
+
+.final-title {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #cbd5e1;
+}
+
+.final-subtitle {
+  font-size: 1.2rem;
+  color: #94a3b8;
+  margin-top: 5px;
+}
+
+.winner-text {
+  color: #fbbf24;
+  font-weight: bold;
+}
+
+/* Tabs */
+.final-content-area {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.final-screen-tabs {
+  display: flex;
+  border-bottom: 1px solid #334155;
+}
+
+.tab-button {
+  flex: 1;
+  padding: 15px;
+  background: transparent;
+  border: none;
+  color: #e8eaed;
+  font-family: "Inter", sans-serif;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  border-bottom: 3px solid transparent;
+}
+
+.tab-button:hover {
+  background-color: #2e3033;
+}
+
+.tab-button.active {
+  color: #20beff;
+  border-bottom-color: #20beff;
+}
+
+.tab-body {
+  flex-grow: 1;
+  padding: 20px;
+  position: relative;
+  overflow: hidden;
+}
+
+.chart-container {
+  position: relative;
+  height: 100%;
+  width: 100%;
+}
+
+.history-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  font-size: 0.9rem;
+}
+
+.history-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid #334155;
+  min-height: 50px;
+}
+
+/* --- Base Card Style for History --- */
+.history-row .card {
+  width: 36px;
+  height: 54px;
+  font-size: 14px;
+  border-radius: 4px;
+  border: 2px solid transparent; /* Keeps layout stable on highlight */
+  margin: 0 2px;
+  position: relative;
+  box-sizing: border-box;
+  background-color: white;
+  display: inline-block;
+}
+
+/* Adjust the rank (Top Left) */
+.history-row .card-rank {
+  font-size: 18px;
+  position: absolute;
+  left: 2px;
+  top: 0px;
+  line-height: 1.2;
+  font-weight: bold;
+}
+
+/* FIX: Absolute Centered Suit */
+.history-row .card-suit {
+  position: absolute;
+  width: 20px; /* Explicit width */
+  height: 20px; /* Explicit height */
+  bottom: 2px;
+  right: 2px;
+  display: flex; /* Flexbox to center the SVG inside this container */
+  align-items: center;
+  justify-content: center;
+}
+
+/* Force SVG to fill the container */
+.history-row .card-suit svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* --- Row Interaction --- */
+.history-row.clickable-row {
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition:
+    background-color 0.15s ease,
+    border-left-color 0.15s ease;
+}
+
+.history-row.clickable-row:hover {
+  background-color: #2e3033;
+  border-left-color: #3b82f6;
+}
+
+/* --- Player Status Styles --- */
+.dimmed-player {
+  opacity: 0.4;
+  filter: grayscale(0.8);
+}
+
+.history-row .card.card-highlighted {
+  border-color: #fbbf24;
+  border-width: 4px;
+  animation: none;
+  box-shadow: none;
+  transform: none;
+  z-index: 2;
+}
+
+.history-header {
+  position: sticky;
+  /*this should be 0, but it causes a slightl gap where you can see the scrolling content*/
+  top: -2px;
+  font-weight: bold;
+  color: #94a3b8;
+  background-color: #202124;
+  z-index: 10;
+}
+
+.h-col {
+  padding: 0 5px;
+}
+.h-num {
+  width: 40px;
+  color: #94a3b8;
+  text-align: center;
+}
+.h-cards {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+}
+.h-board {
+  flex: 2.4;
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+}
+.h-res {
+  width: 100px;
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.res-name {
+  font-size: 1.2em;
+  color: #94a3b8;
+}
+
+.res-amt {
+  font-weight: bold;
+  font-size: 1.2em;
+  color: #20beff;
+}
+
+/* --- Stats Tab --- */
+.stats-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.stat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 15px;
+  border-radius: 8px;
+}
+
+.stat-header {
+  background: transparent;
+  font-weight: bold;
+  color: #cbd5e1;
+  border-bottom: 1px solid #334155;
+  border-radius: 0;
+}
+
+.stat-label {
+  flex: 1;
+  text-align: center;
+  color: #94a3b8;
+  font-weight: 600;
+  font-size: 0.9rem;
+  letter-spacing: 1px;
+}
+
+.stat-val {
+  width: 80px;
+  text-align: center;
+  font-size: 1.2rem;
+  font-weight: bold;
+}
+
+.p0-stat {
+  color: #20beff;
+}
+.p1-stat {
+  color: #f0510f;
+}

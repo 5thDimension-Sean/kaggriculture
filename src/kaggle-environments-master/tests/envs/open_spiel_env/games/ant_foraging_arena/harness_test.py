@@ -1,0 +1,278 @@
+"""Tests for the Ant Foraging Arena LLM harness."""
+
+import json
+
+import pyspiel
+from absl.testing import absltest
+
+from kaggle_environments.core_harness import ParseResult
+from kaggle_environments.envs.open_spiel_env.games.ant_foraging_arena import (
+    ant_foraging_arena_game,  # noqa: F401  (registers the game)
+)
+from kaggle_environments.envs.open_spiel_env.games.ant_foraging_arena.harness import (
+    generate_prompt,
+    get_legal_moves,
+    parse_response,
+)
+
+
+_DIRECTIONS = ("stay", "up", "down", "left", "right")
+
+
+def _make_arena_observation(player_id=0, seed=1):
+    game = pyspiel.load_game("ant_foraging_arena", {"seed": seed})
+    state = game.new_initial_state()
+    return {
+        "observationString": state.observation_string(player_id),
+        "playerId": player_id,
+        "currentPlayer": state.current_player(),
+        "isTerminal": state.is_terminal(),
+        "legalActions": list(state.legal_actions(player_id)),
+        "legalActionStrings": [
+            state.action_to_string(player_id, a) for a in state.legal_actions(player_id)
+        ],
+        "serializedGameAndState": pyspiel.serialize_game_and_state(game, state),
+    }
+
+
+class ParseResponseTest(absltest.TestCase):
+    def test_parse_json_direction(self):
+        result = parse_response('```json\n{"move": "up"}\n```', list(_DIRECTIONS))
+        self.assertEqual(result.legal_action, "up")
+        self.assertEqual(result.raw_action, "up")
+
+    def test_parse_case_insensitive(self):
+        result = parse_response('```json\n{"move": "LEFT"}\n```', list(_DIRECTIONS))
+        self.assertEqual(result.legal_action, "left")
+
+    def test_parse_each_direction(self):
+        for direction in _DIRECTIONS:
+            result = parse_response(
+                f'```json\n{{"move": "{direction}"}}\n```', list(_DIRECTIONS)
+            )
+            self.assertEqual(result.legal_action, direction)
+
+    def test_parse_bare_json(self):
+        result = parse_response(
+            'Thinking… {"move": "down"} that is my choice.', list(_DIRECTIONS)
+        )
+        self.assertEqual(result.legal_action, "down")
+
+    def test_prose_only_response_triggers_rethink(self):
+        # No structured JSON answer. The parser must NOT guess at intent
+        # from a direction word in the prose; that's the ghost-fallback
+        # antipattern. Return None so the rethink loop asks the model
+        # for a structured answer.
+        response = "I considered going up but ended up choosing down"
+        result = parse_response(response, list(_DIRECTIONS))
+        self.assertIsNone(result.legal_action)
+        self.assertIsNone(result.raw_action)
+
+    def test_parse_prefers_last_json_block(self):
+        # Two JSON blocks: a draft in the reasoning and a final answer.
+        response = (
+            'First draft: ```json\n{"move": "up"}\n```\n'
+            'Reconsidering, final: ```json\n{"move": "right"}\n```'
+        )
+        result = parse_response(response, list(_DIRECTIONS))
+        self.assertEqual(result.legal_action, "right")
+
+    def test_parse_no_match_returns_none(self):
+        result = parse_response('```json\n{"move": "diagonal"}\n```', list(_DIRECTIONS))
+        self.assertIsNone(result.legal_action)
+        self.assertEqual(result.raw_action, "diagonal")
+
+    def test_parse_no_direction_returns_none(self):
+        result = parse_response("I have no idea what to do.", list(_DIRECTIONS))
+        self.assertIsNone(result.legal_action)
+        self.assertIsNone(result.raw_action)
+
+    def test_parse_skips_directions_not_legal(self):
+        # If only "stay" is legal, mentioning "up" should not match.
+        result = parse_response("Maybe up?", ["stay"])
+        self.assertIsNone(result.legal_action)
+
+    def test_malformed_json_triggers_rethink(self):
+        # Bad JSON block means stage-1 extracts nothing. The parser must
+        # NOT silently rescue an action from the prose -- the model gets
+        # a chance to fix its format via the rethink loop instead.
+        response = "```json\n{bad}\n```\nFinal answer: stay"
+        result = parse_response(response, list(_DIRECTIONS))
+        self.assertIsNone(result.legal_action)
+        self.assertIsNone(result.raw_action)
+
+    def test_parse_returns_parse_result(self):
+        result = parse_response('```json\n{"move": "up"}\n```', list(_DIRECTIONS))
+        self.assertIsInstance(result, ParseResult)
+
+    def test_illegal_json_does_not_ghost_substitute_from_prose(self):
+        # The model gave an explicit JSON answer ("diagonal") that isn't
+        # legal. The parser must NOT silently substitute a direction word
+        # mentioned elsewhere in the prose -- that's the ghost-fallback
+        # antipattern. Surface raw_action so the rethink loop fires.
+        response = (
+            "I considered up but ruled it out. I'll play diagonal.\n"
+            '```json\n{"move": "diagonal"}\n```'
+        )
+        result = parse_response(response, list(_DIRECTIONS))
+        self.assertIsNone(result.legal_action)
+        self.assertEqual(result.raw_action, "diagonal")
+
+
+class GeneratePromptTest(absltest.TestCase):
+    def test_includes_core_rules(self):
+        obs = _make_arena_observation(player_id=0)
+        prompt = generate_prompt(obs, [])
+        self.assertIn("Ant Foraging Arena", prompt)
+        self.assertIn("2v2", prompt)
+        self.assertIn("stay, up, down, left, right", prompt)
+
+    def test_includes_player_team_and_seat(self):
+        obs0 = _make_arena_observation(player_id=0)
+        prompt0 = generate_prompt(obs0, [])
+        self.assertIn("team id is 0", prompt0)
+        self.assertIn("player 0", prompt0)
+        self.assertIn("seat 0", prompt0)
+
+        obs2 = _make_arena_observation(player_id=2)
+        prompt2 = generate_prompt(obs2, [])
+        self.assertIn("team id is 1", prompt2)
+        self.assertIn("player 2", prompt2)
+
+    def test_includes_grid_and_food_count(self):
+        prompt = generate_prompt(_make_arena_observation(player_id=0), [])
+        self.assertIn("8x8", prompt)
+        self.assertIn("3 food", prompt)
+
+    def test_other_team_board_hidden(self):
+        # The per-player observation must not leak the opposing board.
+        obs2 = _make_arena_observation(player_id=2)
+        prompt = generate_prompt(obs2, [])
+        parsed = json.loads(obs2["observationString"])
+        # Team B's view exposes board team_id == 1 only.
+        self.assertEqual(parsed["board"]["team_id"], 1)
+        self.assertNotIn('"team_id": 0', prompt)
+
+    def test_off_board_moves_described_as_illegal(self):
+        # The prompt must not claim off-board moves are "silently blocked";
+        # the engine excludes them from legal_actions, so a model that
+        # picks an off-board direction will hit the rethink loop and
+        # waste a retry. The prompt should say off-board is illegal.
+        prompt = generate_prompt(_make_arena_observation(player_id=0), [])
+        flat = " ".join(prompt.split())
+        self.assertIn("Off-board moves are not legal", flat)
+        self.assertNotIn("silently blocked", flat)
+
+    def test_within_team_turn_order_stated(self):
+        # The within-team move order is the only timing fact that affects
+        # strategy (the opposing team plays in parallel on a hidden
+        # board, so cross-team interleaving doesn't matter). Make sure
+        # the prompt at least states who moves first within the team.
+        prompt = generate_prompt(_make_arena_observation(player_id=0), [])
+        flat = " ".join(prompt.split())
+        self.assertIn("seat 0 moves first, then seat 1", flat)
+
+    def test_progress_uses_round_units(self):
+        # The legacy "moves_remaining" field counted interleaved
+        # single-player steps, mismatched against max_turns which counts
+        # rounds. The prompt must surface round-based progress.
+        # Display is 1-indexed: game start is "round 1 of 50", final
+        # move is "round 50 of 50".
+        prompt = generate_prompt(_make_arena_observation(player_id=0), [])
+        self.assertIn("round 1 of 50", prompt)
+
+    def test_round_display_is_one_indexed(self):
+        # Engine move_number is 0-indexed; the prompt must add 1 so the
+        # final move reads "round 50 of 50" rather than "round 49 of 50"
+        # (which models misread as "one round still remains").
+        game = pyspiel.load_game("ant_foraging_arena", {"seed": 1})
+        state = game.new_initial_state()
+        # Advance to the very last move (move_number == total_moves - 1).
+        # total_moves = max_turns * num_ants_per_team * NUM_TEAMS = 50*2*2 = 200.
+        total_moves = 50 * 2 * 2
+        for _ in range(total_moves - 1):
+            cp = state.current_player()
+            state.apply_action(state.legal_actions(cp)[0])
+        active = state.current_player()
+        obs = {
+            "observationString": state.observation_string(active),
+            "playerId": active,
+            "legalActions": list(state.legal_actions(active)),
+            "legalActionStrings": [state.action_to_string(active, a) for a in state.legal_actions(active)],
+        }
+        prompt = generate_prompt(obs, [])
+        # We're on the final move; display must say round 50.
+        self.assertIn("round 50 of 50", prompt)
+
+    def test_no_raw_board_json_dump(self):
+        # The earlier prompt embedded the whole board as a multi-page JSON
+        # dump (including dense pheromone matrices). The new prompt
+        # renders the grid as ASCII and pheromones sparsely.
+        prompt = generate_prompt(_make_arena_observation(player_id=0), [])
+        # No raw "grid": list-of-lists left in the prompt.
+        self.assertNotIn('"grid":', prompt)
+        # No dense pheromone matrix left in the prompt.
+        self.assertNotIn('"pheromone_to_food":', prompt)
+        # ASCII column header is present.
+        self.assertIn("0 1 2 3 4 5 6 7", prompt)
+
+
+    def test_rethink_suffix_appended(self):
+        prompt = generate_prompt(
+            _make_arena_observation(player_id=0),
+            [],
+            previous_response="I'll go diagonal",
+            previous_action="diagonal",
+        )
+        self.assertIn("You suggested", prompt)  # ILLEGAL leads with action
+        self.assertIn("diagonal", prompt)
+        self.assertIn("not a legal", prompt)
+
+    def test_no_rethink_on_first_attempt(self):
+        prompt = generate_prompt(_make_arena_observation(player_id=0), [])
+        self.assertNotIn("Your previous response was", prompt)
+
+    def test_empty_move_history(self):
+        prompt = generate_prompt(_make_arena_observation(player_id=0), [])
+        self.assertIn("(no moves yet)", prompt)
+
+
+class GetLegalMovesTest(absltest.TestCase):
+    def test_from_provided_actions(self):
+        observation = {
+            "legalActions": [0, 1, 4],
+            "legalActionStrings": ["stay", "up", "right"],
+        }
+        result = get_legal_moves(observation)
+        self.assertEqual(result, {0: "stay", 1: "up", 4: "right"})
+
+    def test_empty_when_off_turn(self):
+        # Inactive players get no actions.
+        observation = {"legalActions": [], "legalActionStrings": []}
+        self.assertEqual(get_legal_moves(observation), {})
+
+    def test_from_serialized_state(self):
+        # Player 0 starts at the nest centre, all 5 actions legal.
+        obs = _make_arena_observation(player_id=0)
+        # Drop the helpful pre-computed fields to force the fallback path.
+        obs.pop("legalActions")
+        obs.pop("legalActionStrings")
+        result = get_legal_moves(obs)
+        self.assertEqual(
+            sorted(result.values()),
+            ["down", "left", "right", "stay", "up"],
+        )
+
+    def test_off_turn_player_via_serialized_state(self):
+        # Step 0 belongs to player 0; player 2 has no legal actions.
+        obs = _make_arena_observation(player_id=2)
+        obs.pop("legalActions")
+        obs.pop("legalActionStrings")
+        self.assertEqual(get_legal_moves(obs), {})
+
+    def test_empty_serialized(self):
+        self.assertEqual(get_legal_moves({"serializedGameAndState": ""}), {})
+
+
+if __name__ == "__main__":
+    absltest.main()
