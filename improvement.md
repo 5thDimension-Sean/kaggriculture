@@ -1,1608 +1,1815 @@
-# Kaggriculture Improvement Plan
+# Replacement `improvements.md` — routing, scoring, and replay-parity audit
 
-## Purpose
+## Executive summary
 
-This document records the replay analysis of the current Kaggriculture agents and turns the findings into an implementation plan that another AI/coder can use later.
+The lower-scoring run is **not failing because the seed is different**. Both supplied replays report:
 
-Primary models analyzed:
+- `seed: 0`
+- `module_version: 1.32.6`
+- `kaggriculture`
+- `720` steps
+- the same board/game configuration
+- `DONE` for both players
 
-- **THUNDER THUNDER**
-- **Sean Zhang**
+The scores are nevertheless very different:
 
-Opponent behavior was also analyzed because the market is shared and opponent production affects prices.
-
----
-
-# 1. Executive Summary
-
-The main conclusion is:
-
-> **Do not rewrite the farming/production system from scratch.**
-
-THUNDER THUNDER already has a very strong production template. Sean Zhang's model is also mechanically competent and reaches roughly 61k–70k depending on the seed.
-
-The largest weakness is the **economic/market layer**, especially selling products without sufficiently considering the current and expected market price.
-
-The strongest evidence is the difference in realized revenue despite similar production:
-
-### Milk
-
-THUNDER:
-- 221 milk sold
-- $27,833 revenue
-- ~$125.94 average realized price
-
-Sean:
-- 236 milk sold
-- $6,889 revenue
-- ~$29.19 average realized price
-
-Sean actually produced/sold more milk but made about **$20.9k less**.
-
-### Strawberry
-
-THUNDER:
-- 282 sold
-- $30,868 revenue
-
-Sean:
-- 272 sold
-- $22,572 revenue
-
-Only 10 units difference, but about **$8.3k** revenue difference.
-
-This strongly suggests that the next major improvement should be **dynamic market timing**, not simply increasing production.
-
----
-
-# 2. Replay Scores
-
-| Replay | Player | Opponent | Score |
-|---|---|---|---:|
-| No. 1 | THUNDER THUNDER | Jince | 90,112 |
-| Thunder replay | THUNDER THUNDER | saitamad | 82,397 |
-| Sean replay | Sean Zhang | Jesse Ferguson | 70,257 |
-| Sean replay | Sean Zhang | Nirav Mehta 1612 | 61,816 |
-
-Important observation:
-
-The same model varies substantially between seeds.
-
-THUNDER:
-- 90,112
-- 82,397
-
-Sean:
-- 70,257
-- 61,816
-
-Therefore, the goal is not simply to copy one replay. The agent needs to be robust to different market conditions and opponent behavior.
-
----
-
-# 3. Environment Facts From the Replays
-
-The uploaded replay specification identifies:
-
-- Environment: `kaggriculture`
-- Module version: `1.32.6`
-- Board size: 10×10
-- Four 5×5 quadrants
-- 720 episode steps
-- 24 turns/day
-- 30 days
-- Starting money: 3000
-- Shed capacity: 100 non-seed items
-- Maximum market orders per turn: 10
-- Initial farmhand hiring follows a Fibonacci-style cost sequence
-- Town-center selling occurs every 24 turns
-- Town-shop selling occurs every 4 turns
-- Shops unlock at intervals during the game
-- Weed spawn chance is 0.005
-
-Available farmer/hand operations include:
-
-- NORTH
-- SOUTH
-- EAST
-- WEST
-- PASS
-- PICKUP
-- PLANT
-- WATER
-- HARVEST
-- FERTILIZE
-- BUILD_COOP
-- BUILD_PASTURE
-- DIG
-- PLACE
-- FEED
-- COLLECT_FERTILIZER
-- CARE
-
-Market operations include:
-
-- BUY_SEED
-- BUY_PRODUCT
-- BUY_ANIMAL
-- SELL
-- HIRE
-- BUY_LAND
-
-Do not assume any additional mechanics until the actual Kaggriculture source code is verified.
-
----
-
-# 4. What THUNDER THUNDER Does
-
-## 4.1 Opening
-
-The No. 1 THUNDER replay establishes the economy immediately.
-
-Early actions include:
-
-- HIRE ×4
-- BUY_ANIMAL COW ×1
-- BUY_ANIMAL SHEEP ×4
-- BUY_SEED WHEAT ×5
-- BUY_SEED MELON ×5
-- BUY_PRODUCT WHEAT ×5
-- Build/establish pasture
-- Place animals
-- Plant crops
-- Water crops
-- Feed animals
-- Care for animals
-
-This should be treated as a strong opening-book candidate.
-
-### Recommendation
-
-Keep this opening mostly unchanged until simulation testing proves a better alternative.
-
----
-
-# 5. THUNDER's Production Strategy
-
-The No. 1 replay concentrates on a small set of resources.
-
-Main production:
-
-- WHEAT
-- STRAWBERRY
-- MELON
-- MILK
-- WOOL
-- FERTILIZER
-
-Animals:
-
-- COW
-- SHEEP
-
-It largely avoids spending meaningful resources on:
-
-- CARROT
-- TOMATO
-- EGG
-- GOOSE
-
-This specialization appears intentional and effective.
-
-## Principle
-
-Do not grow everything.
-
-Focus on the products with strong expected economic value.
-
----
-
-# 6. THUNDER's Labor Strategy
-
-THUNDER continuously hires farmhands.
-
-The No. 1 replay reaches approximately 10 farmhands.
-
-The replay contains very large numbers of:
-
-- WATER
-- movement
-- HARVEST
-- FERTILIZE
-- FEED
-- CARE
-- COLLECT_FERTILIZER
-- PLANT
-
-The hands effectively form a production machine while the farmer acts as a support/logistics unit.
-
-### Important lesson
-
-Do not over-optimize individual farmer movement at the expense of overall production.
-
-The farmhand system is one of the main reasons the strategy scales.
-
----
-
-# 7. THUNDER's Land Strategy
-
-Strong replays eventually unlock:
-
-- NW
-- NE
-- SW
-
-and do not appear to prioritize unlocking every possible area.
-
-The agent also buys land during the season.
-
-### Recommendation
-
-Retain the two-land-expansion strategy as the baseline.
-
-Only change it after testing the economic value of the additional land against hiring/production costs.
-
----
-
-# 8. THUNDER's Wheat Strategy
-
-Wheat is especially important.
-
-THUNDER uses wheat as:
-
-1. A crop
-2. Animal input/feed
-3. A product to buy from the market
-4. A product to sell
-5. A production buffer
-
-This is an important economic feature of the strategy.
-
-The agent is not simply trying to produce all inputs itself.
-
-It can:
-
-> Buy cheap wheat → use it for production → produce higher-value outputs → sell those outputs.
-
-This creates an input/output arbitrage strategy.
-
----
-
-# 9. THUNDER Revenue
-
-Approximate No. 1 THUNDER sales:
-
-| Product | Quantity | Revenue |
+| Run | P0 | P1 |
 |---|---:|---:|
-| Strawberry | 282 | 30,868 |
-| Milk | 221 | 27,833 |
-| Wheat | 443 | 18,655 |
-| Melon | 114 | 14,862 |
-| Fertilizer | 228 | 11,900 |
-| Wool | 132 | 3,478 |
-| **Total** | | **107,596** |
+| `thunder.json` | 59,137 | 61,422 |
+| `91802898.json` | 43,625 | 51,475 |
+| Difference | **15,512** | **9,947** |
 
-Approximate wheat purchases:
+The important point is:
 
-- 9,107 spent
+> **Same environment seed does not imply same trajectory when the agents take different actions.**
 
-This demonstrates the scale of the production/trading engine.
+This game has shared farm state and, critically, a shared dynamic market. An agent's sales change market inventory and therefore future prices. Town demand is also shared. The observation explicitly marks `market`, `farms`, `day`, `hour`, `step`, and `town` as shared, while shed/farmer inventories are private. Therefore two agents playing against different policies can diverge substantially even with the same seed.
+
+The lower-scoring replay also has a very large behavioral difference: its action stream differs from Thunder's at **533 of 720 step indices** (counting a step as different if either player's action differs).
+
+The main conclusion is that the current implementation is too heavily based on a fixed replay route plus ad-hoc overlays. It needs to become a **state-conditioned controller** with explicit route phase/state validation, correct replay-step alignment, economic guardrails, and much more conservative preemption.
 
 ---
 
-# 10. Sean Zhang's Current Strengths
+# 1. What the two JSON replays actually prove
 
-Sean already has many of the correct mechanics.
+## 1.1 Environment configuration is effectively identical
 
-The replay shows:
+Both files report:
 
-- Early hiring
-- Animal setup
-- Pasture setup
-- Wheat production
-- Melon production
-- Strawberry production
-- Watering
-- Animal care
-- Fertilizer collection
-- Continuous hiring
-- Land expansion
-- 10 farmhands
-- Wheat market activity
+- `boardSize = 10`
+- `episodeSteps = 720`
+- `farmHandCostMult = 1`
+- `maxMarketOrdersPerTurn = 10`
+- `startingMoney = 3000`
+- `turnsPerDay = 24`
+- `townCenterSellInterval = 24`
+- `townShopSellInterval = 4`
+- `townShopUnlockInterval = 3`
+- `weedSpawnChance = 0.005`
+- `seed = 0` in `info`
+
+The Thunder replay reports rewards `[59137.0, 61422.0]`; the other replay reports `[43625.0, 51475.0]`.
+
+So this is **not a configuration mismatch**.
+
+The supplied replay schema also explicitly says the final reward is player money at the end of the game. In other words, the lower number is an economic result, not a mysterious scoring/display issue.
+
+---
+
+# 2. The single biggest conceptual mistake: treating the seed as the whole game state
+
+A deterministic seed determines the environment's random events, but the environment is not an isolated sequence of random events.
+
+Actions modify state.
+
+In this game:
+
+1. Player 0 acts.
+2. Player 1 acts.
+3. Both players affect public farm state.
+4. Both players interact with the same market.
+5. Selling changes market inventory.
+6. Market inventory changes future prices.
+7. Town shops unlock and create demand.
+8. Crop/animal production changes inventory available for future sales.
+9. Hiring and land purchases change future capacity and expenses.
 
 Therefore:
 
-> **Sean should not be rewritten from scratch.**
-
-The production system is already viable.
-
-The largest gains should come from improving the economic controller.
-
----
-
-# 11. Sean's Biggest Problem: Market Timing
-
-The most important fix is:
-
-> **Do not sell merely because inventory exists.**
-
-Current behavior can result in products being sold at poor prices.
-
-Milk is the clearest example.
-
-### Sean, 61,816 replay
-
-- 236 milk
-- $6,889 revenue
-- ~$29.19/unit
-
-### THUNDER, 90,112 replay
-
-- 221 milk
-- $27,833 revenue
-- ~$125.94/unit
-
-The difference is approximately $20,944 despite THUNDER selling fewer units.
-
-This means:
-
-> The economic controller can be worth more than another production expansion.
-
----
-
-# 12. Strawberry Evidence
-
-THUNDER:
-
-- 282 strawberry
-- $30,868
-
-Sean:
-
-- 272 strawberry
-- $22,572
-
-The production difference is tiny.
-
-The revenue difference is large.
-
-This is another strong indication that price timing matters.
-
----
-
-# 13. Wool Evidence
-
-Wool is an important counterexample.
-
-THUNDER:
-
-- 132 wool
-- $3,478
-
-Sean:
-
-- 132 wool
-- $12,602
-
-Sean wins massively here.
-
-This proves that the issue is not simply "Sean sells badly."
-
-Instead:
-
-> Different products have different profitable selling windows.
-
-The strategy must therefore be product-specific.
-
----
-
-# 14. Sean's Other Replay
-
-Sean's 70,257 replay had approximately:
-
-| Product | Revenue |
-|---|---:|
-| Strawberry | 49,362 |
-| Wheat | 20,828 |
-| Melon | 16,950 |
-| Fertilizer | 12,758 |
-| Milk | 11,780 |
-| Wool | 7,610 |
-
-Strawberry alone generated nearly $50k.
-
-This demonstrates that the same general production strategy can perform much better under favorable market conditions.
-
-Therefore:
-
-> The agent needs to adapt to market conditions rather than assuming one fixed sales schedule is optimal.
-
----
-
-# 15. Opponent Behavior
-
-Opponent behavior matters because market inventory/prices are shared.
-
-The analyzed opponents include:
-
-- Jince
-- saitamad
-- Jesse Ferguson
-- Nirav Mehta 1612
-
-Jesse/Nirav use a more aggressive high-action strategy than Sean in several respects.
-
-They can reach approximately 12 farmhands and perform much larger quantities of:
-
-- PICKUP
-- FEED
-- WATER
-- HARVEST
-- movement
-- wheat buying/selling
-
-One observed opponent pattern included roughly:
-
-- 1,100 wheat sold
-- 967 wheat bought
-
-This is far more market activity than Sean's approximately 450 wheat sold / 240 wheat bought range.
-
----
-
-# 16. Do NOT Blindly Copy the Opponent
-
-The aggressive opponent strategy is not automatically better.
-
-Example:
-
-Jesse Ferguson scored approximately:
-
-- 66,777
-
-while Sean scored:
-
-- 70,257
-
-Therefore:
-
-> More actions, more wheat, and more farmhands do not automatically equal a higher score.
-
-The goal is efficient production and profitable conversion to cash.
-
----
-
-# 17. Opponent-Aware Market Model
-
-The agent can observe public opponent information such as their farm state.
-
-It should estimate opponent production.
-
-Useful signals:
-
-- Opponent farmhand count
-- Opponent crop distribution
-- Opponent animal count
-- Opponent planted crops
-- Opponent active production
-- Opponent visible inventory/production indicators
-- Market inventory
-- Market price
-- Recent price movement
-
-Do not assume private opponent inventory is observable unless the source code confirms it.
-
----
-
-# 18. Market Analyzer
-
-Create a dedicated market-analysis module.
-
-For every product maintain:
-
 ```text
-current_price
-rolling_average_price
-rolling_min_price
-rolling_max_price
-price_velocity
-market_inventory
-market_inventory_velocity
-my_inventory
-my_production_rate
-days_remaining
+same seed
+    !=
+same market trajectory
+    !=
+same farm trajectory
+    !=
+same private inventory
+    !=
+same optimal route
 ```
 
-Potentially also:
+This explains why copying a high-scoring Thunder replay and running a different agent against it does not reproduce Thunder's score.
 
-```text
-opponent_estimated_production
-expected_future_price
-storage_value
-```
+The replay itself demonstrates this: both runs have the same seed but end at very different balances.
 
 ---
 
-# 19. Price Score
+# 3. The current code is replay-driven rather than state-driven
 
-A simple first version:
+The implementation says it uses two fixed position-specific routes extracted from Thunder replays:
+
+- P0 route from episode `91385999`
+- P1 route from episode `91471546`
+
+The route data is embedded as compressed/base85 JSON.
+
+That is a useful optimization source, but it is dangerous as the primary policy.
+
+The important distinction is:
+
+```text
+GOOD:
+Thunder replay -> discover a strong schedule -> use it as a prior
+
+BAD:
+Thunder replay -> hard-code every action -> assume the same state will exist
+```
+
+The current code is much closer to the second model.
+
+The code selects `_ACTIONS_P0` or `_ACTIONS_P1` based almost entirely on seat and step, then applies overlays. The relevant implementation is the route selection and action pipeline in `agent()`.
+
+The route constants are explicitly described as replay-derived in the source. fileciteturn2file0L11-L24
+
+---
+
+# 4. Critical routing bug: replay step indexing must be verified
+
+This is one of the first things to fix.
+
+The replay JSON has a bootstrap observation at `step = 0` whose recorded action is `PASS`.
+
+The next recorded action occurs with the observation whose state has advanced to `step = 1`.
+
+The embedded route, however, starts with:
 
 ```python
-price_score = current_price / rolling_average_price
+_Actions_P0[0] =
+{
+    "farmer": ["PASS"],
+    "market": [
+        ["HIRE"],
+        ...
+    ]
+}
 ```
 
-Example policy:
+and `_ACTIONS_P0[1]` is already the first physical movement/pickup sequence.
+
+The current implementation does:
+
+```python
+step = ...
+action = _copy_action(actions[step])
+```
+
+That is a red flag because the replay representation needs to be treated explicitly as:
 
 ```text
-price_score > 1.15
-    → sell aggressively
-
-0.90 <= price_score <= 1.15
-    → sell only if storage is getting full
-
-price_score < 0.90
-    → hold
+observation step 0 -> bootstrap/pass
+observation step 1 -> route action 0
+observation step 2 -> route action 1
+...
 ```
 
-These thresholds are only initial hypotheses.
+Do not assume this without testing the actual submission harness, but **the replay evidence strongly indicates that route-indexing and replay-indexing are not the same coordinate system**.
 
-They must be tuned through simulations.
+### Required fix
+
+Create one explicit conversion:
+
+```python
+def _route_index(obs_step):
+    # Verify this against the actual harness.
+    # For the supplied replay representation:
+    if obs_step <= 0:
+        return None
+    return min(obs_step - 1, ROUTE_LENGTH - 1)
+```
+
+Then make every route-dependent function use the same route index.
+
+Do NOT independently use:
+
+- `step`
+- `step - 1`
+- `step + 1`
+
+in different overlays.
+
+Right now that would create subtle temporal inconsistencies between:
+
+- weed repair
+- future sell lookup
+- preemption
+- fertilizer relay
+- terminal liquidation
+
+This is especially dangerous because the code uses future route actions for economic decisions.
 
 ---
 
-# 20. Better Market Model
+# 5. The biggest routing design flaw: overlays mutate a fixed route without validating the resulting state
 
-A stronger controller should predict future value.
-
-Conceptually:
-
-```python
-expected_future_price =
-    current_price
-    + predicted_price_change
-```
-
-Where predicted price change depends on:
-
-- market inventory trend
-- recent price trend
-- opponent production
-- own production
-- town consumption
-- remaining time
-
-Then compare:
-
-```python
-sell_now_value
-```
-
-against:
-
-```python
-hold_value
-```
-
----
-
-# 21. Market Inventory Direction
-
-If market inventory is falling:
+The current pipeline is approximately:
 
 ```text
-inventory ↓
-→ scarcity ↑
-→ price may rise
+fixed route
+ -> weed repair
+ -> repay preemption
+ -> price guard
+ -> sell ranking
+ -> preemption
+ -> fertilizer relay
+ -> terminal liquidation
+ -> hand alignment
 ```
 
-If market inventory is rising:
+The code explicitly applies those transformations sequentially. fileciteturn1file1L125-L145
 
-```text
-inventory ↑
-→ supply ↑
-→ price may fall
-```
-
-The exact relationship must be confirmed from the source code.
-
-Do not hard-code this assumption until the market implementation is inspected.
-
----
-
-# 22. Product-Specific Selling
-
-Do not use one universal threshold.
+This is fragile because each transformation assumes the previous transformation preserved the assumptions of the route.
 
 For example:
 
 ```text
-strawberry:
-    potentially hold for high-value windows
+route says:
+    hand 4 -> PLANT WHEAT
 
-milk:
-    highly price-sensitive
+weed overlay says:
+    tile is WEED
+    -> DIG instead
 
-wool:
-    highly price-sensitive
-
-wheat:
-    can be sold OR used internally
-
-fertilizer:
-    sell when excess production exists
-
-melon:
-    sell according to price and remaining production cycles
+next step:
+    replay intended action
 ```
 
-Exact thresholds should be learned from replay data and source-code economics.
+That can be valid.
+
+But the route may have also assumed:
+
+- a specific unit is carrying seeds,
+- a specific unit is standing at a specific coordinate,
+- another hand is moving through that coordinate,
+- the tile was planted already,
+- the crop's growth clock started at the original time,
+- a future harvest happens on a specific step.
+
+A one-turn mutation can therefore invalidate a sequence much farther downstream.
+
+The weed overlay is implemented as a stateful transaction and replays the intended action after DIG. fileciteturn2file2L496-L536
+
+That is clever, but it is not enough to guarantee route validity.
 
 ---
 
-# 23. Shed Management
+# 6. Concrete evidence of route disruption from the supplied replays
 
-Shed capacity is approximately:
+At step 84, Thunder performs:
 
-```text
-100 non-seed items
+```json
+{
+  "hands": [
+    ["WEST"],
+    ["PLANT", "STRAWBERRY"],
+    ["WEST"]
+  ]
+}
 ```
 
-Therefore production must consider storage.
+The lower-scoring replay instead performs:
 
-Create a value-per-slot concept:
+```json
+{
+  "hands": [
+    ["WEST"],
+    ["DIG"],
+    ["WEST"]
+  ]
+}
+```
+
+At step 85 the lower-scoring run performs the delayed `PLANT STRAWBERRY`.
+
+This shows the weed-repair overlay is actually changing the schedule.
+
+The immediate money balance does not diverge there, so this is **not by itself the explanation for the entire 15,512-point deficit**. It is evidence that the controller is not executing the Thunder route.
+
+There are additional weed substitutions later, including steps around 519, 568–569, 630–641.
+
+### Required improvement
+
+Every route mutation must be recorded as a transaction:
+
+```text
+original route action
+actual replacement
+reason
+start step
+expected repair step
+whether downstream route is still valid
+```
+
+If a route action is delayed, the controller should either:
+
+1. replay a verified repair micro-route, or
+2. abandon the route segment and enter a local state-based controller.
+
+Do not blindly resume the old route after an arbitrary number of turns.
+
+---
+
+# 7. The other replay is not simply "Thunder but worse"
+
+This is important.
+
+The lower-scoring replay changes strategy in ways that materially affect economics.
+
+By the end of the two runs:
+
+## P0
+
+Thunder:
+
+- 266 hires
+- 8 cows purchased
+- 6 sheep purchased
+- 234 fertilizer sold
+- 458 wheat sold
+- 143 wool sold
+- 218 milk sold
+- 114 melon sold
+- 283 strawberry sold
+
+Other:
+
+- 280 hires
+- 10 cows purchased
+- 4 sheep purchased
+- 253 fertilizer sold
+- 438 wheat sold
+- 122 wool sold
+- 245 milk sold
+- 102 melon sold
+- 254 strawberry sold
+
+## P1
+
+Thunder:
+
+- 259 hires
+- 8 cows purchased
+- 6 sheep purchased
+- 237 fertilizer sold
+- 445 wheat sold
+- 144 wool sold
+- 220 milk sold
+- 114 melon sold
+- 286 strawberry sold
+
+Other:
+
+- 278 hires
+- 10 cows purchased
+- 4 sheep purchased
+- 254 fertilizer sold
+- 459 wheat sold
+- 120 wool sold
+- 242 milk sold
+- 114 melon sold
+- 252 strawberry sold
+
+This is a major strategic change:
+
+```text
+Thunder:
+    more sheep
+    more wool
+    fewer cows
+    fewer hires
+
+Other:
+    more cows
+    more milk
+    more hires
+```
+
+So the lower-scoring controller is not just losing because of one routing mistake. It is making a different production portfolio.
+
+---
+
+# 8. Why the animal strategy matters
+
+The supplied replay data shows the lower-scoring controller produced much less wool and much more milk.
+
+Approximate realized sell revenue from the recorded sell actions:
+
+| Resource | Thunder P0 | Other P0 |
+|---|---:|---:|
+| Wool | 15,661 | 3,276 |
+| Milk | 8,843 | 23,096 |
+
+For P1:
+
+| Resource | Thunder P1 | Other P1 |
+|---|---:|---:|
+| Wool | 16,566 | 3,274 |
+| Milk | 8,136 | 22,765 |
+
+This is a huge change in what the agent is putting into the market.
+
+The other run does generate more gross sell revenue overall in this replay, but that does **not** translate into more final money.
+
+That is the critical economic lesson:
+
+> Optimize final cash, not gross sales.
+
+The lower run buys more animals and hires more workers, while changing the production mix.
+
+That can increase gross revenue while reducing net profit.
+
+---
+
+# 9. Hiring is another clear source of leakage
+
+The other run hires substantially more:
+
+| Player | Thunder hires | Other hires | Extra |
+|---|---:|---:|---:|
+| P0 | 266 | 280 | +14 |
+| P1 | 259 | 278 | +19 |
+
+The game uses a Fibonacci-based daily hire-cost sequence.
+
+Therefore "hire as much as possible" is not free capacity.
+
+The controller should not treat every available worker as automatically beneficial.
+
+### Required hiring rule
+
+Before a hire:
+
+```text
+expected incremental production value
+    >
+incremental hire cost
++ expected food/care/input costs
++ opportunity cost
+```
+
+At minimum, use a phase-specific maximum worker count.
+
+Do not allow a route overlay or fallback to add workers simply because money happens to be available.
+
+---
+
+# 10. The market strategy needs to be less reactive
+
+The current code contains a reasonable market impact model.
+
+It computes:
 
 ```python
-value_per_storage_slot =
-    expected_sell_price * expected_quantity
+quantity * max(0, current_quote - later_quote)
 ```
 
-When storage is close to full:
+and then adds a demand-urgency multiplier.
 
-1. Sell high-price items first.
-2. Sell low-value excess items if necessary.
-3. Preserve inputs required for upcoming production.
-4. Avoid selling resources that are more valuable internally than externally.
+The implementation is here. fileciteturn2file2L569-L614
+
+However, there are three problems.
+
+## Problem A — It scores the route, not the complete economic decision
+
+The score estimates price impact.
+
+It does not directly ask:
+
+```text
+If I sell this now,
+what happens to my final cash compared with waiting?
+```
+
+It should include:
+
+- current sale proceeds,
+- future expected price,
+- expected town demand,
+- inventory carrying risk,
+- production timing,
+- terminal liquidation,
+- opponent's likely market actions.
 
 ---
 
-# 24. Important Distinction: External vs Internal Value
+## Problem B — Sell ranking can reorder actions that were deliberately timed
 
-For each item calculate:
+The function `_rank_sell_slots()` reorders sell orders by computed score while keeping their slots occupied. fileciteturn2file2L617-L630
+
+This can destroy deliberate ordering.
+
+If a replay was discovered with:
 
 ```text
-external_value = expected sale price
+SELL A
+SELL B
+SELL C
+```
+
+because A/B/C were deliberately timed around market state, a generic ranking layer can silently transform it into:
+
+```text
+SELL C
+SELL A
+SELL B
+```
+
+without checking whether those sales were supposed to be coupled to:
+
+- a crop harvest,
+- a worker movement,
+- an animal output event,
+- a town consumption tick,
+- an opponent's sale.
+
+### Improvement
+
+Only reorder **independent sell orders**.
+
+Tag route orders as:
+
+```python
+{
+    "item": "WOOL",
+    "quantity": 12,
+    "timing_class": "flexible"
+}
+```
+
+versus:
+
+```python
+{
+    "item": "WHEAT",
+    "quantity": 25,
+    "timing_class": "fixed"
+}
+```
+
+Never reorder fixed-timing sales.
+
+---
+
+# 11. The preemption logic is too aggressive
+
+The current configuration contains:
+
+```python
+_PREEMPT_FRACTION = 2.0
+_PREEMPT_MAX_BATCH = 30
+_PREEMPT_MIN_FUTURE_QUANTITY = 4
+```
+
+and can shift premium products up to three turns early.
+
+The implementation is in `_preempt_shift()`. fileciteturn2file1L268-L319
+
+The fundamental issue is that "opponent is nearby" is not sufficient evidence that moving a sale earlier is profitable.
+
+The code uses a clone-distance score derived from public farm state. fileciteturn2file1L204-L213
+
+But farm-state similarity does not guarantee:
+
+```text
+same private inventory
+same shed stock
+same production timing
+same market intentions
+same future sales
+```
+
+The observation explicitly keeps shed/private inventories private.
+
+Therefore:
+
+```text
+farm clone
+!=
+economic clone
+```
+
+### Improvement
+
+Use at least three signals:
+
+1. public farm similarity,
+2. market trajectory similarity,
+3. observed opponent sales.
+
+Only preempt if all three are sufficiently similar.
+
+---
+
+# 12. P1 needs a different model from P0
+
+The source correctly recognizes that P1 acts after P0 and uses a tighter clone threshold. fileciteturn2file0L36-L39
+
+But this should be taken further.
+
+P1 observes the market **after P0's action**.
+
+Therefore P1 has an information advantage.
+
+P1 should not blindly execute a P0-derived schedule.
+
+Instead:
+
+```text
+P0:
+    route-first
+
+P1:
+    route + market correction
+```
+
+For P1, before selling:
+
+```text
+Was P0's sale already made?
+Did P0 push inventory up?
+Did the price already move?
+Is the route's planned sale still optimal?
+```
+
+This is particularly important for shared-market games.
+
+---
+
+# 13. Fertilizer relay is not safe merely because the game looks like a clone
+
+The fertilizer relay uses checkpoints at steps:
+
+```text
+216
+240
+264
+```
+
+and locks if all three are within the clone threshold. fileciteturn2file2L395-L406
+
+It then pre-sells fertilizer three turns early.
+
+The quantity is later repaid at the original scheduled step. fileciteturn2file2L424-L475
+
+This is quantity-neutral, but not necessarily value-neutral.
+
+The price at:
+
+```text
+t - 3
+```
+
+can be lower than the price at:
+
+```text
+t
+```
+
+even if the opponent is following a similar farm route.
+
+### Improvement
+
+Only relay fertilizer when:
+
+```text
+price(t-3) >= price(t) * safety_factor
+```
+
+or when expected market impact makes the earlier sale better.
+
+Otherwise keep the original sale.
+
+---
+
+# 14. There is a hidden state-machine problem in the overlay stack
+
+The code has several independent state stores:
+
+```python
+_WEED_STATE
+_SHIFT_STATE
+_RELAY_STATE
+```
+
+Each is indexed by seat.
+
+Each has its own step bookkeeping.
+
+This creates a risk where:
+
+```text
+weed repair
+    changes route timing
+
+preemption
+    assumes old route timing
+
+fertilizer relay
+    assumes old route timing
+
+terminal liquidation
+    assumes current shed state
+```
+
+All four can be operating on different notions of "what the route is doing."
+
+### Required architecture
+
+Replace independent overlays with one controller state:
+
+```python
+ControllerState(
+    route_index,
+    route_phase,
+    repair_transaction,
+    sale_transactions,
+    preemption_transaction,
+    relay_transaction,
+    expected_positions,
+    expected_inventory,
+)
+```
+
+Every modification updates the same state.
+
+---
+
+# 15. The code's fallback is dangerous for scoring
+
+The exception handler returns:
+
+```python
+{
+    "farmer": ["PASS"],
+    "hands": [["PASS"], ...],
+    "market": []
+}
+```
+
+This is safe from a schema perspective but potentially disastrous economically.
+
+The code currently catches **all exceptions** and silently converts them into PASS actions.
+
+That means a bug can become:
+
+```text
+exception
+ -> PASS
+ -> no market action
+ -> no production action
+ -> score loss
+```
+
+without any visible failure.
+
+### Required improvement
+
+During development, never swallow the exception.
+
+Use:
+
+```python
+except Exception as exc:
+    # record a compact diagnostic
+    ...
+    raise
+```
+
+For the final submission, use a minimal safe fallback, but only after the implementation has been validated.
+
+At minimum, maintain a counter or deterministic diagnostic flag so a scoring run can tell whether the fallback ever fired.
+
+---
+
+# 16. The route should be validated against the observation before execution
+
+Before using a route action, verify:
+
+## Farmer/hand count
+
+```text
+route hand count <= actual hand count
+```
+
+## Position
+
+For movement actions:
+
+```text
+expected route position ~= actual position
+```
+
+## Inventory
+
+For:
+
+```text
+PLANT
+FEED
+PLACE
+PICKUP
+SELL
+```
+
+verify the necessary inventory exists.
+
+## Tile state
+
+For:
+
+```text
+PLANT
+BUILD_PASTURE
+HARVEST
+WATER
+FERTILIZE
+```
+
+verify the tile is compatible.
+
+## Market order
+
+For every sell:
+
+```text
+quantity <= available shed quantity
 ```
 
 and:
 
 ```text
-internal_value = value of using it as an input
+current price > configured floor
 ```
 
-For wheat, internal value can be substantial.
+## Route drift
 
-Therefore:
-
-```python
-effective_wheat_value =
-    max(external_sale_value, internal_production_value)
-```
-
-This prevents the agent from selling wheat that it should have used for production.
-
----
-
-# 25. Production Planner
-
-Separate the production planner from the market controller.
-
-The production planner should decide:
-
-- What crops to plant
-- How much land to dedicate to each
-- Which animals to maintain
-- Whether to buy another animal
-- Whether to buy land
-- Whether to hire another hand
-- How much wheat to reserve
-
-The market controller should decide:
-
-- BUY
-- HOLD
-- SELL SMALL
-- SELL MEDIUM
-- SELL LARGE
-
-Do not mix these systems into one giant decision function.
-
----
-
-# 26. Crop Specialization
-
-Baseline crops:
+If too many assumptions fail:
 
 ```text
-WHEAT
-STRAWBERRY
-MELON
+abandon fixed route segment
+enter recovery planner
 ```
 
-Use a profit-per-tile/day estimate.
+Do not continue executing stale route actions.
 
-Conceptually:
+---
+
+# 17. A better route architecture
+
+The replacement should use four layers.
+
+## Layer 1 — Deterministic bootstrap
+
+Steps 0–20:
+
+Use the proven opening.
+
+This is where fixed routes are most reliable because the state is nearly identical.
+
+---
+
+## Layer 2 — Route with state assertions
+
+For each route action:
 
 ```python
-expected_profit_per_tile =
-    expected_yield
-    * expected_sell_price
-    / growth_time
+if state_matches_route(obs, route_node):
+    execute(route_node.action)
+else:
+    recover()
 ```
 
-Also account for:
-
-- seed cost
-- watering cost/action
-- fertilizer
-- labor
-- opportunity cost
-- remaining days
-- storage
-- market saturation
-
-Only new planting decisions should be changed dynamically.
-
-Do not destroy profitable existing crops just because another crop temporarily has a better price.
-
----
-
-# 27. Animal Strategy
-
-Baseline:
-
-- 1 cow
-- multiple sheep
-
-Animal decisions should use:
-
-```text
-expected output
-× expected price
-− feed cost
-− labor cost
-− opportunity cost
-```
-
-Do not add animals just because money is available.
-
-Add them when the expected remaining-season profit is positive.
-
----
-
-# 28. Hiring Strategy
-
-The Fibonacci hiring cost means the marginal value of another hand eventually increases.
-
-Use:
-
-```python
-expected_future_profit_from_hand
->
-hire_cost
-```
-
-as the conceptual decision rule.
-
-However, retain the current aggressive hiring baseline because it is clearly part of the successful strategy.
-
-The first ~4 hires should probably remain fixed unless simulation shows a better opening.
-
-Later hires can become adaptive.
-
----
-
-# 29. Land Strategy
-
-Baseline:
-
-- Buy land twice.
-- Reach approximately NW + NE + SW.
-
-Potential future improvement:
-
-Calculate:
-
-```python
-land_value =
-    expected_additional_production
-    - land_cost
-```
-
-and compare it with:
-
-```python
-hire_value
-animal_value
-crop_value
-```
-
-Buy whichever produces the highest expected remaining-season return.
-
----
-
-# 30. Fixed Opening + Adaptive Endgame
-
-Recommended structure:
-
-## Days 0–5
-
-Mostly fixed.
-
-Use the successful THUNDER opening.
-
-## Days 6–12
-
-Semi-adaptive.
-
-Begin monitoring:
-
-- prices
-- market inventory
-- crop profitability
-- storage
-- opponent production
-
-## Days 13–20
-
-Adaptive specialization.
-
-Increase production of the most profitable resources.
-
-## Days 21–29
-
-Maximum profitable production.
-
-Sell according to market conditions.
-
-## Final day
-
-Liquidation mode.
-
-Do not preserve inventory unnecessarily.
-
----
-
-# 31. Final-Day Liquidation
-
-At the end of the season:
-
-```text
-remaining production time ≈ 0
-```
-
-Therefore the value of holding most products collapses.
-
-Prioritize:
-
-1. Sell high-value products.
-2. Sell excess inventory.
-3. Sell resources that cannot be converted into another profitable production cycle.
-4. Use remaining turns for actions that actually create score.
-
-Do not leave valuable sellable inventory sitting in the shed.
-
----
-
-# 32. Four Versions to Test
-
-Create four experimental agents.
-
-## Version A — Current THUNDER
-
-Exact baseline.
-
-Purpose:
-
-- benchmark
-
----
-
-## Version B — THUNDER + Dynamic Selling
-
-Keep production identical.
-
-Only replace sales logic.
-
-Purpose:
-
-- isolate market timing improvement
-
-This should be the first experiment.
-
----
-
-## Version C — THUNDER + Dynamic Selling + Opponent Model
-
-Add:
-
-- opponent production estimation
-- market inventory trend
-- price prediction
-
-Purpose:
-
-- exploit shared market dynamics
-
----
-
-## Version D — THUNDER + Adaptive Production
-
-Add:
-
-- crop specialization
-- animal optimization
-- dynamic hiring
-- dynamic land purchases
-
-Purpose:
-
-- maximize long-run adaptability
-
----
-
-# 33. Experimental Method
-
-Do not judge a strategy from one replay.
-
-Run many seeds.
-
-For every version record:
-
-```text
-final_score
-final_money
-total_sales_revenue
-total_buy_cost
-wheat_revenue
-strawberry_revenue
-melon_revenue
-milk_revenue
-wool_revenue
-fertilizer_revenue
-farmhand_count
-land_count
-animal_count
-crop_count
-average_sell_price_per_product
-number_of_sell_actions
-number_of_buy_actions
-```
-
-Especially track:
-
-```text
-revenue / unit
-```
-
-because raw production volume can be misleading.
-
----
-
-# 34. Key Metrics
-
-The most useful metrics are:
-
-### Revenue per unit
-
-```python
-revenue / units_sold
-```
-
-### Profit per tile
-
-```python
-profit / tile / day
-```
-
-### Profit per farmhand
-
-```python
-profit / farmhand / day
-```
-
-### Market timing gain
-
-```python
-actual_sale_price / rolling_average_price
-```
-
-### Storage efficiency
-
-```python
-revenue / average_storage_used
-```
-
----
-
-# 35. Exact Source-Code Investigation Needed
-
-Before implementing advanced market prediction, inspect the Kaggriculture source code for:
-
-1. Crop growth times
-2. Crop yields
-3. Seed costs
-4. Water requirements
-5. Fertilizer effects
-6. Animal production rates
-7. Feed requirements
-8. Animal care bonuses
-9. Animal purchase costs
-10. Farmhand costs
-11. Farmhand behavior
-12. Land costs
-13. Shed overflow behavior
-14. Town-center selling
-15. Town-shop selling
-16. Market price calculation
-17. Market inventory update
-18. Market purchase behavior
-19. Market selling behavior
-20. End-of-day mechanics
-21. End-of-season scoring
-22. Opponent observation visibility
-
-This should be done before hard-coding economic constants.
-
----
-
-# 36. Critical Market Equation Goal
-
-The ultimate goal is to determine:
-
-```text
-price(t + 1)
-```
-
-from:
-
-```text
-price(t)
-market_inventory(t)
-buy_volume(t)
-sell_volume(t)
-town_consumption(t)
-```
-
-If the exact market function can be reconstructed, implement a simulator for price changes.
-
-Then the agent can ask:
-
-> "What happens to the price if I sell 20 milk right now?"
-
-rather than guessing.
-
----
-
-# 37. Potential Advanced Strategy: Internal Market Simulator
-
-Build a lightweight market simulator.
-
-Input:
-
-```python
-current_market_state
-candidate_action
-```
-
-Output:
-
-```python
-predicted_price_after_action
-predicted_future_price
-predicted_profit
-```
-
-Then evaluate:
-
-```text
-SELL NOW
-vs
-HOLD
-vs
-SELL 25%
-vs
-SELL 50%
-vs
-SELL 100%
-```
-
-Choose the action with the highest expected value.
-
-This could be significantly stronger than fixed thresholds.
-
----
-
-# 38. Potential Advanced Strategy: Rolling Replay Learning
-
-Store historical observations:
-
-```text
-state
-action
-price_before
-quantity_sold
-price_after
-reward
-```
-
-Then learn empirical relationships.
+The route node should contain expected state, not just an action.
 
 Example:
 
 ```python
-milk_price_after_selling(q)
+{
+    "action": {
+        "farmer": ["PLANT", "WHEAT"]
+    },
+    "preconditions": {
+        "tile_kind": "EMPTY",
+        "seed": {"WHEAT": ">=1"}
+    },
+    "tolerance": {
+        "position": 0
+    }
+}
 ```
-
-could be estimated directly from previous game states.
-
-This is safer than blindly using an RL model.
 
 ---
 
-# 39. Potential Advanced Strategy: Opponent Forecast
+## Layer 3 — Local economic controller
 
-Estimate:
+For market decisions:
 
 ```text
-opponent_wheat_supply
-opponent_strawberry_supply
-opponent_milk_supply
-opponent_wool_supply
+fixed route recommendation
+        +
+current price
+        +
+market inventory
+        +
+town demand
+        +
+own inventory
+        +
+opponent observed behavior
+        ->
+final sell quantity
 ```
 
-from their visible farm.
+This should override only the market portion when justified.
 
-Then estimate market pressure.
+---
+
+## Layer 4 — Endgame liquidation
+
+At the final 4–8 turns:
+
+1. stop buying anything unnecessary,
+2. stop hiring unless a final production cycle is clearly profitable,
+3. sell all useful liquid inventory,
+4. preserve enough action slots for liquidation,
+5. never leave valuable shed inventory stranded.
+
+The existing terminal liquidation concept is directionally correct. fileciteturn2file2L647-L661
+
+---
+
+# 18. Specific economic changes recommended
+
+## 18.1 Prefer sheep when replay evidence says wool is superior
+
+Do not hard-code:
+
+```text
+10 cows / 4 sheep
+```
+
+from the lower replay.
+
+Use observed profitability.
+
+The supplied Thunder run demonstrates that the higher-scoring policy maintained:
+
+```text
+8 cows / 6 sheep
+```
+
+purchases per player and generated substantially more wool sales.
+
+Therefore the default animal portfolio should be closer to the Thunder portfolio unless the current market strongly favors milk.
+
+---
+
+## 18.2 Cap hires
+
+Add:
+
+```python
+MAX_HIRES_BY_PHASE = {
+    "early": ...,
+    "mid": ...,
+    "late": ...,
+}
+```
+
+The exact values should be calibrated from replay data.
+
+The key rule is:
+
+> Never hire simply because the route contains a HIRE.
+
+---
+
+## 18.3 Track marginal worker value
+
+For every additional worker:
+
+```text
+incremental expected sell value
+-
+incremental worker cost
+```
+
+If negative, do not hire.
+
+---
+
+## 18.4 Track animal marginal value
+
+For each animal type:
+
+```text
+expected remaining production
+*
+expected sale price
+-
+animal purchase cost
+-
+feed/care/input cost
+```
+
+Use this rather than a fixed cow/sheep schedule.
+
+---
+
+# 19. Market strategy replacement
+
+Replace "rank every sell" with:
+
+### Step A — classify
+
+Every route sell becomes one of:
+
+```text
+FIXED
+FLEXIBLE
+OPPORTUNISTIC
+TERMINAL
+```
+
+### Step B — calculate value of waiting
+
+For each flexible sale:
+
+```text
+wait_value =
+    expected_future_price
+    - current_price
+    - expected_price_impact_difference
+```
+
+### Step C — calculate opponent impact
+
+Estimate whether the opponent is likely to sell the same item soon.
+
+### Step D — execute only if expected value is positive
+
+This is much safer than blindly moving a sale because another farm looks similar.
+
+---
+
+# 20. What the score trajectory says about the actual failure
+
+The money difference is initially tiny.
+
+For P0, the Thunder-minus-other cash gap is approximately:
+
+```text
+step 0       0
+step 160     0
+step 193    -75
+step 216    -76
+step 240    -77
+step 264   -879
+step 300  -1,331
+step 360    -502
+step 480  +3,319
+step 600 +11,210
+step 680 +14,477
+step 719 +15,512
+```
+
+For P1:
+
+```text
+step 0        0
+step 160      0
+step 193     +9
+step 216     +8
+step 240     +7
+step 264    -12
+step 300   +103
+step 360   +350
+step 480 +5,368
+step 600 +7,350
+step 680 +11,305
+step 719 +9,947
+```
+
+This is extremely useful.
+
+It proves the score problem is **not primarily an opening failure**.
+
+The lower-scoring controller is competitive early and loses most of its money during the mid/late economic phase.
+
+Therefore do NOT spend the next iteration primarily optimizing steps 0–100.
+
+Focus on:
+
+```text
+~250 onward
+animal portfolio
+hiring
+sell timing
+market adaptation
+late production
+terminal sales
+```
+
+---
+
+# 21. The most important observed economic divergence
+
+The other run sells more gross product but earns substantially different revenue composition.
+
+Across both players:
+
+### Thunder
+
+High-value wool revenue:
+
+```text
+P0: 15,661
+P1: 16,566
+```
+
+### Other
+
+High-value wool revenue:
+
+```text
+P0: 3,276
+P1: 3,274
+```
+
+The other run replaces that production with milk.
+
+This is the clearest sign that the lower-scoring policy has drifted into the wrong production specialization.
+
+Do not interpret:
+
+```text
+more milk sold
+```
+
+as:
+
+```text
+better strategy
+```
+
+because final score is net money after costs.
+
+---
+
+# 22. Do not compare action sequences without comparing state
+
+A useful replay comparison tool should output:
+
+```text
+step
+seat
+Thunder action
+Other action
+farm-state delta
+private-inventory delta
+market-price delta
+money delta
+reason for divergence
+```
+
+The current raw JSON comparison is not enough.
+
+For every divergence, classify it:
+
+```text
+ROUTE
+WEED_REPAIR
+MARKET
+PREEMPTION
+RELAY
+ANIMAL
+HIRE
+MOVEMENT
+RECOVERY
+```
+
+Then calculate score contribution by category.
+
+That will tell you which modification actually helps.
+
+---
+
+# 23. Required replay-diff harness
+
+Build a script that takes:
+
+```text
+thunder.json
+candidate.json
+```
+
+and produces:
+
+```text
+same_seed: true
+same_config: true
+step_count: 720
+
+action_divergence_steps: 533
+
+first_divergence:
+    step: 84
+    seat: 0
+    actor: hand1
+    thunder: PLANT STRAWBERRY
+    candidate: DIG
+
+money_gap:
+    P0: +15512 Thunder
+    P1: +9947 Thunder
+
+largest_gap:
+    P0: step 698
+    P1: step 679
+```
+
+Then produce a second table:
+
+```text
+category            count
+movement            ...
+planting            ...
+watering            ...
+harvest             ...
+market buy          ...
+market sell         ...
+hire                ...
+animal purchase     ...
+weed repair         ...
+```
+
+This should become mandatory for every new iteration.
+
+---
+
+# 24. Do not use the current compressed route as an opaque artifact
+
+The enormous base85/zlib strings make the strategy very difficult to audit.
+
+They are acceptable for deployment but bad for development.
+
+During development, keep:
+
+```text
+routes/p0.json
+routes/p1.json
+```
+
+with readable records.
+
+Then optionally compile/compress them for final submission.
+
+This lets you answer:
+
+```text
+Why is P0 selling wool here?
+Why is P1 buying a cow here?
+Why is this worker moving north?
+Why is this sell three turns early?
+```
+
+without reverse-engineering compressed data.
+
+---
+
+# 25. Replacement controller design
+
+The new controller should follow this structure:
+
+```python
+def agent(obs, configuration=None):
+    state = get_controller_state(obs)
+
+    if is_bootstrap(state):
+        return bootstrap_action(state)
+
+    if route_is_valid(state):
+        action = route_action(state)
+    else:
+        action = recover_route(state)
+
+    action = validate_and_repair_farm_actions(obs, action)
+
+    action = optimize_market_actions(
+        obs,
+        configuration,
+        action,
+        state,
+    )
+
+    action = apply_conservative_preemption(
+        obs,
+        action,
+        state,
+    )
+
+    action = apply_fertilizer_relay_if_profitable(
+        obs,
+        action,
+        state,
+    )
+
+    action = terminal_cleanup(obs, action, state)
+
+    return validate_action(obs, action)
+```
+
+The important difference is:
+
+```text
+route -> mutate
+```
+
+becomes:
+
+```text
+state -> route candidate -> validate -> optimize -> validate -> execute
+```
+
+---
+
+# 26. Route validity score
+
+Implement a route confidence score:
+
+```text
+confidence =
+    position_match
+  + hand_count_match
+  + tile_match
+  + inventory_match
+  + crop_state_match
+  + animal_state_match
+  + market_regime_match
+```
 
 Example:
 
-```text
-opponent has huge wheat production
-+
-market wheat inventory increasing
-=
-do not expand wheat purely for sale
+```python
+if confidence >= 0.90:
+    use_route
+elif confidence >= 0.70:
+    use_route_with_local_repairs
+else:
+    enter_recovery
 ```
 
-But if wheat is cheap:
+The exact thresholds should be calibrated.
 
-```text
-BUY WHEAT
-```
-
-and convert it into a higher-value product.
+The important principle is that a route must be allowed to fail gracefully.
 
 ---
 
-# 40. Potential Advanced Strategy: Price Shock Detection
+# 27. Recovery should be local, not global
 
-If a product suddenly moves far above its rolling average:
+If one hand hits a weed:
 
-```text
-current_price >> rolling_average
-```
-
-trigger:
-
-```text
-SELL LARGE
-```
-
-But avoid immediately selling the entire inventory if the price is still rising.
-
-A better controller could use staged sales:
-
-```text
-25%
-25%
-25%
-25%
-```
-
-with reassessment after each market update.
-
----
-
-# 41. Potential Advanced Strategy: Price Floor
-
-If a product becomes extremely cheap:
-
-```text
-current_price << rolling_average
-```
-
-consider buying it.
-
-Especially for:
-
-- wheat
-- other reusable inputs
-
-Only do this if:
-
-```text
-storage capacity available
-AND
-internal consumption exists
-AND
-expected future value > purchase price
-```
-
----
-
-# 42. Potential Advanced Strategy: Production Lock-In
-
-When a crop is already planted:
-
-Do not constantly reconsider it.
+Do NOT discard the whole farm plan.
 
 Instead:
 
 ```text
-existing_crop = locked
-new_tiles = adaptive
+hand 3:
+    DIG
+    repeat intended action
+
+other hands:
+    continue route
 ```
 
-This avoids wasting actions and resources chasing short-term price noise.
+If the farmer is displaced:
+
+```text
+farmer:
+    recalculate shortest path to next required task
+```
+
+If the market diverges:
+
+```text
+market:
+    re-optimize sell quantity
+```
+
+Only abandon the whole route if multiple independent state assumptions fail.
 
 ---
 
-# 43. Potential Advanced Strategy: Endgame Forecast
+# 28. Preemption should have a profit gate
 
-Calculate:
+Before moving a sale from `t` to `t-k`, calculate:
 
-```python
-remaining_days
-remaining_growth_cycles
+```text
+current_sale_value
++
+expected_saved_price_impact
+-
+expected_lost_future_price
+-
+opportunity_cost
 ```
 
-Then decide whether a new crop/animal/land purchase can actually pay back before the episode ends.
+Only preempt if positive.
+
+Minimum rule:
+
+```python
+if expected_gain <= 0:
+    do_not_preempt()
+```
+
+Do not use clone distance as the only reason.
+
+---
+
+# 29. Fertilizer relay should also have a profit gate
+
+The relay currently uses clone confirmation and a fixed three-turn lead.
+
+Change it to:
+
+```text
+clone confidence
+AND
+future fertilizer sale exists
+AND
+current fertilizer price is attractive
+AND
+earlier sale is not worse than expected future sale
+AND
+market order capacity remains
+```
+
+If any condition fails:
+
+```text
+do not relay
+```
+
+---
+
+# 30. Market-order capacity must be treated as a scarce resource
+
+The environment allows at most 10 market orders per player per turn.
+
+The current code checks this in several places.
+
+But multiple overlays can consume those slots.
 
 Example:
 
 ```text
-if crop_growth_time > remaining_time:
-    don't plant
+base route:       8 orders
+preemption:      +2 orders
+relay:           +1 order
+terminal:        +1 order
 ```
 
-Likewise:
+Now the environment can silently drop orders beyond the maximum.
+
+The configuration explicitly says extra orders beyond the limit are silently dropped.
+
+Therefore the controller must reserve capacity:
 
 ```text
-if animal_payback_period > remaining_time:
-    don't buy
+fixed route orders
+>
+required corrective orders
+>
+opportunistic orders
 ```
+
+Never let an optimization layer silently crowd out required orders.
 
 ---
 
-# 44. Potential Advanced Strategy: Opportunity Cost
+# 31. The market optimizer should not buy inventory just to support a stale route
 
-Every action has an opportunity cost.
+The lower replay repeatedly buys WHEAT at slightly different quantities/times.
 
-A farmer moving 10 tiles to sell an item may be losing the opportunity to:
+Some of these differences are only small, but once the route has drifted, buying inputs to preserve an invalid route can create unnecessary expenses.
 
-- harvest
-- plant
-- care
-- collect fertilizer
-- feed
-
-The controller should eventually estimate:
+Before every route-driven buy:
 
 ```text
-action_value =
-    direct_profit
-    + future_profit
-    - opportunity_cost
+Is this input still needed?
+Will it be consumed by a valid downstream action?
+Will the resulting production happen before season end?
 ```
 
-This is a later optimization, not the first change.
-
----
-
-# 45. What NOT to Optimize First
-
-Do not spend the first iteration optimizing:
-
-- individual NORTH/SOUTH/EAST/WEST movements
-- exact farmer path
-- obscure crops
-- goose production
-- tomato production
-- carrot production
-- tiny fertilizer timing differences
-
-These are likely much smaller gains than market timing.
-
----
-
-# 46. Recommended Development Order
-
-## Phase 1
-
-Preserve the existing THUNDER production script.
-
-Add logging.
-
----
-
-## Phase 2
-
-Add rolling price history.
-
----
-
-## Phase 3
-
-Implement dynamic selling.
-
----
-
-## Phase 4
-
-Implement storage-aware selling.
-
----
-
-## Phase 5
-
-Implement dynamic wheat purchasing.
-
----
-
-## Phase 6
-
-Reverse-engineer the market equation from source.
-
----
-
-## Phase 7
-
-Implement opponent production estimation.
-
----
-
-## Phase 8
-
-Implement adaptive crop allocation.
-
----
-
-## Phase 9
-
-Optimize hiring and land timing.
-
----
-
-## Phase 10
-
-Optimize movement/routing.
-
----
-
-# 47. Target Architecture
-
-Recommended modules:
+If not:
 
 ```text
-agent/
-├── main.py
-├── strategy.py
-├── production.py
-├── market.py
-├── market_model.py
-├── opponent_model.py
-├── farmhands.py
-├── animals.py
-├── crops.py
-├── inventory.py
-├── economy.py
-├── routing.py
-├── endgame.py
-└── logging.py
+do not buy
 ```
 
 ---
 
-# 48. Strategy Responsibilities
+# 32. The agent needs a "season remaining" model
 
-## strategy.py
-
-High-level phase control:
+At every production decision:
 
 ```text
-OPENING
-SETUP
-PRODUCTION
-ADAPTATION
-ENDGAME
+remaining_steps
+remaining_days
+crop growth time
+animal output cycle
+expected sale opportunity
 ```
+
+must be considered.
+
+Late-season inputs should be rejected if they cannot produce saleable output before the end.
+
+This is especially important because the final reward is cash, not production count.
 
 ---
 
-## market.py
+# 33. What not to do in the next version
 
-Decide:
+Do NOT:
+
+- simply copy more Thunder actions,
+- increase the number of preemption rules,
+- increase hiring,
+- increase animal count,
+- sell more total product,
+- add another overlay on top of the existing overlays,
+- assume same seed means same market,
+- use farm clone distance as proof of identical strategy,
+- swallow exceptions and continue silently,
+- reorder all market sells indiscriminately,
+- let route timing and replay timing use different step conventions.
+
+These changes may make the code look more sophisticated while making it less stable.
+
+---
+
+# 34. Priority order for fixes
+
+## P0 — Must fix
+
+### 1. Route/replay step alignment
+
+Verify exactly whether:
 
 ```text
-BUY
-SELL
-HOLD
+obs step 0 -> PASS
+obs step 1 -> route[0]
 ```
+
+is required by the submission harness.
+
+Make one canonical route-index function.
+
+### 2. Add route-state validation
+
+Never execute a fixed action when its prerequisites are absent.
+
+### 3. Stop treating clone distance as economic identity
+
+Require market/behavior evidence too.
+
+### 4. Cap hiring and animal expansion
+
+Prevent the lower-run pattern of excessive hires and cow purchases.
+
+### 5. Add final-cash optimization
+
+Evaluate actions by net money, not gross revenue.
 
 ---
 
-## market_model.py
+# 35. P1 — High-value improvements
 
-Predict:
+1. Preserve Thunder's sheep/wool specialization unless the live market clearly disproves it.
+2. Make P1 market-aware because P1 sees P0's effects.
+3. Make sell reordering conditional on timing class.
+4. Add profit-gated preemption.
+5. Add profit-gated fertilizer relay.
+6. Add route drift detection.
+7. Build the replay-diff diagnostic.
+
+---
+
+# 36. P2 — Engineering improvements
+
+1. Uncompress route data during development.
+2. Give route nodes readable names.
+3. Add deterministic controller state.
+4. Add assertions for inventory and positions.
+5. Log fallback exceptions during development.
+6. Track action transformations by overlay.
+7. Record every shifted sale as a transaction.
+
+---
+
+# 37. Recommended validation experiment
+
+Run four agents with the **same seed**:
+
+### Experiment A
 
 ```text
-future price
-price response to quantity sold
-market pressure
+Thunder vs Thunder
 ```
 
----
-
-## production.py
-
-Decide:
+Expected benchmark:
 
 ```text
-crop allocation
-animal allocation
-land usage
+~59k / ~61k
 ```
 
----
+for the supplied Thunder replay.
 
-## farmhands.py
-
-Manage:
+### Experiment B
 
 ```text
-worker assignments
-routing
-watering
-planting
-harvesting
-feeding
-care
-fertilizer
+Candidate vs Candidate
 ```
 
----
+Measures whether the candidate is internally stable.
 
-## opponent_model.py
-
-Estimate:
+### Experiment C
 
 ```text
-opponent production
-market pressure
+Candidate vs Thunder
 ```
 
----
+Measures opponent adaptation.
 
-## economy.py
-
-Calculate:
+### Experiment D
 
 ```text
-profit
-expected ROI
-hire ROI
-land ROI
-animal ROI
+Thunder vs Candidate
 ```
 
----
+Measures the reverse seat effect.
 
-# 49. Baseline Policy
-
-The initial baseline should remain approximately:
+Then compare:
 
 ```text
-4 early hires
-1 cow
-4 sheep
-wheat + melon opening
-pasture setup
-aggressive watering/care
-continuous farmhand hiring
-two land purchases
-wheat market activity
-strawberry/melon/wheat production
-milk/wool/fertilizer production
+P0 score
+P1 score
+market prices
+animal mix
+hire count
+wool produced
+milk produced
+sell timing
 ```
 
-Then improve only one component at a time.
+This is far more informative than comparing two independent replay files.
 
 ---
 
-# 50. Core Hypothesis
+# 38. What "scoring" is actually doing here
 
-The central hypothesis to test is:
+There is no evidence in the supplied files that the scoring system is refusing to score the candidate.
 
-> **THUNDER's high score comes primarily from an efficient fixed production engine, while a substantial amount of Sean's lost score comes from selling products during poor price windows.**
-
-Therefore:
-
-> **The best next agent is likely not "more farming." It is THUNDER's farming engine plus a substantially smarter economic controller.**
-
----
-
-# 51. Priority List
-
-## Priority 1 — Dynamic selling
-Expected impact: VERY HIGH
-
-## Priority 2 — Price history
-Expected impact: VERY HIGH
-
-## Priority 3 — Market inventory trend
-Expected impact: HIGH
-
-## Priority 4 — Storage-aware decisions
-Expected impact: HIGH
-
-## Priority 5 — Wheat arbitrage
-Expected impact: HIGH
-
-## Priority 6 — Opponent market-pressure model
-Expected impact: MEDIUM/HIGH
-
-## Priority 7 — Adaptive crop allocation
-Expected impact: MEDIUM
-
-## Priority 8 — Dynamic hiring
-Expected impact: MEDIUM
-
-## Priority 9 — Dynamic land timing
-Expected impact: MEDIUM
-
-## Priority 10 — Movement optimization
-Expected impact: LOW/MEDIUM
-
----
-
-# 52. Final Recommendation
-
-Start from **THUNDER THUNDER's No. 1 replay**.
-
-Do NOT rewrite its opening.
-
-Do NOT immediately add complicated RL.
-
-First implement:
+The lower replay has:
 
 ```text
-THUNDER production
-+
-price history
-+
-dynamic selling
-+
-storage management
-+
-wheat buy/hold/sell logic
+statuses = ["DONE", "DONE"]
 ```
 
-Then test across many seeds.
+and a numeric reward for both players.
 
-Only after that should opponent modeling and adaptive production be added.
+Therefore it **is scoring**.
 
-The likely winning architecture is:
+The issue is that the candidate simply earns less money.
 
-> **Deterministic production + adaptive economics + opponent-aware market prediction.**
+The supplied reward values are:
 
-That gives the agent the reliability of the No. 1 fixed script while addressing the biggest weakness visible in the Sean replays.
+```text
+Thunder:
+    P0 = 59137
+    P1 = 61422
+
+Candidate:
+    P0 = 43625
+    P1 = 51475
+```
+
+So the debugging target should be:
+
+```text
+why did the candidate finish with less cash?
+```
+
+not:
+
+```text
+why did the scorer fail?
+```
+
+---
+
+# 39. Final diagnosis
+
+The lower score is best explained by a combination of:
+
+1. **Different trajectory despite identical seed** because the agents affect shared state.
+2. **Fixed replay routing** that assumes a replay state instead of validating the live state.
+3. **Route/step-index ambiguity** between replay actions and embedded route actions.
+4. **Weed repair and other overlays modifying the route**, creating schedule drift.
+5. **Over-hiring** relative to Thunder.
+6. **Different animal portfolio**, especially substantially fewer sheep and much less wool production.
+7. **Too much reliance on farm-state clone distance** for economic preemption.
+8. **Market sell transformations that can interfere with deliberate replay timing.**
+9. **Fertilizer relay based on clone confirmation rather than explicit profitability.**
+10. **No strong net-profit model** connecting production decisions, input costs, worker costs, animal costs, and final liquidation.
+11. **Silent exception fallback to PASS**, which can hide real code defects.
+
+The most important insight is:
+
+> The candidate should not try to reproduce Thunder's action sequence. It should reproduce Thunder's **decision logic under the candidate's actual state**.
+
+---
+
+# 40. Target architecture
+
+The desired final architecture is:
+
+```text
+                 ┌────────────────────┐
+                 │ current observation│
+                 └─────────┬──────────┘
+                           │
+                           v
+                ┌──────────────────────┐
+                │ state normalization  │
+                └──────────┬───────────┘
+                           │
+                           v
+                ┌──────────────────────┐
+                │ route-state matcher  │
+                └───────┬───────┬──────┘
+                        │       │
+                  valid │       │ invalid
+                        │       v
+                        │   local recovery
+                        v
+                  route candidate
+                        │
+                        v
+                farm-action validator
+                        │
+                        v
+                 market optimizer
+                        │
+                        v
+                 preemption gate
+                        │
+                        v
+                 fertilizer gate
+                        │
+                        v
+                terminal liquidation
+                        │
+                        v
+                   final validator
+                        │
+                        v
+                     action
+```
+
+This is the replacement strategy to implement.
+
+The fixed Thunder route should remain as a **prior**, because it contains useful information. It should not remain the unquestioned source of truth.
+
+---
+
+# 41. Bottom line
+
+If only five changes are made, make these:
+
+```text
+1. Fix/verify route indexing against the replay step convention.
+2. Add strict route-state validation and local recovery.
+3. Stop using clone distance alone to justify market preemption.
+4. Restore a profit-driven animal/hiring policy instead of the lower run's
+   extra cows + extra hires.
+5. Optimize final cash, not gross sales.
+```
+
+The supplied data strongly indicates that the big score loss happens in the middle/late game rather than the opening. The P0 gap grows from roughly hundreds of dollars around the midgame to **15,512 dollars by the end**, while P1 ends **9,947 dollars behind**. That is exactly the signature of an economic-policy drift, not a scoring-system failure.
+
+---
+
+## Evidence references
+
+- The Thunder replay reports seed `0`, the official configuration, and rewards `59137 / 61422`. fileciteturn3file1L19-L19
+- The candidate replay reports the same seed/configuration and rewards `43625 / 51475`. fileciteturn1file6L387-L395
+- The code identifies its routes as P0/P1 routes extracted from Thunder replays and lists its runtime overlays. fileciteturn2file0L11-L39
+- The code selects the seat-specific fixed route and applies the overlay stack in sequence. fileciteturn1file1L125-L145
+- The preemption logic uses public farm clone distance and can shift premium sales by up to three turns. fileciteturn2file1L204-L319
+- The fertilizer relay similarly uses checkpoint-based clone detection and a three-step lead. fileciteturn2file2L395-L475
+- Weed repair replaces route planting/building with DIG and then replays the intended action. fileciteturn2file2L496-L536
+- The market scorer ranks sales using estimated price impact and demand urgency. fileciteturn2file2L569-L630
+- Terminal liquidation is implemented in the final four steps. fileciteturn2file2L647-L661
