@@ -1,175 +1,88 @@
-"""MapleLeaf 5.9 — opportunistic shed-surplus sells + earlier liquidation for Kaggriculture.
+"""MapleLeaf 6.0 -- unified route-and-market-control engine for Kaggriculture.
 
-New in 5.9 vs 5.8:
-  Loss analysis across 20 real opponent games (loss5.8/ folder) identified four
-  distinct loss categories and drove three concrete overlay improvements:
+Complete rewrite (version-mapleleaf-6.0), not an incremental patch of 5.9.
+main_inspo.py (5.9) accreted its runtime overlays one A/B-tested fix at a
+time across 5.0-5.9 (documented in its own docstring history) and ended up
+with two near-duplicate state machines (premium preemption vs. fertilizer
+relay) and a hand-picked fixed terminal-liquidation order. This rewrite keeps
+every one of 5.9's validated *behaviors* -- nothing empirically tuned is
+regressed -- but rebuilds the implementation around the routing/market logic
+found by auditing all nine notebooks in model_score/, most importantly by
+directly decompressing the embedded `main.py` inside
+model_score/kaggriculture-findings-from-zero-to-top-meta.ipynb (a "v21.1
+conditional Top-30 memory" agent, independently league-tested there at
+176-0 / Bradley-Terry 2128 across a 12-agent, 1056-game round robin -- the
+single most rigorously validated agent architecture found anywhere in
+model_score/). Concretely, three pieces are ported/adapted from that source
+and cross-checked against the other eight model_score notebooks (all of
+which independently reimplement the identical market-price formula, which
+also matches this file's own _MARKET_PARAMS -- strong convergent validation
+that the constants below are the real engine's):
 
-  LOSS CATEGORY SUMMARY (20 games):
-    wheat_frontload  (9 games, avg margin 17k): opponents buy extra wheat early
-      and sell 8-18 more wheat events throughout the game at similar prices.
-      Root cause: they produce more wheat volume from a differently-scaled route.
-    cowx3_heavy      (5 games, avg margin 19k): opponents use COW×3, SHEEP×1,
-      WHEAT×10, BUY_PRODUCT WHEAT×17 route generating 30 more FERTILIZER
-      (89-90 vs our 58-63) and more STRAWBERRY/WOOL.
-    superfarm        (4 games, avg margin 15k): 400+ sells vs our 150; fully
-      different high-diversity farming strategy.
-    other            (2 games, avg margin 12k): 5-HIRE and variant routes.
+  1. Opponent-similarity metric -- `_public_route_signature` /
+     `_signature_distance` replace 5.9's coarser `_public_signature` /
+     `_clone_distance` (aggregate tile-type counts only) with a per-actor
+     position-aware signature (each hand's (x, y), a popcount over unlocked
+     quadrants, per-tile yield totals). This is used only where 5.9 already
+     gated on clone distance; per 5.9's own hard-won finding (see its
+     docstring "Retuned in 5.8" section: tightening this gate was net
+     -negative under the real 1.32.6 engine, fully unconditional was the
+     best result found), every gate threshold below stays at the same
+     effectively-unconditional sentinel 5.9 shipped with. The finer metric
+     changes nothing about *when* these mechanisms fire today; it only
+     gives the still-present opponent-tile-reading fallback path (see next)
+     a more precise signal if the gate is ever tightened again.
+  2. `_opponent_exposure` generalizes 5.8's premium-only
+     `_opponent_ready_premium` to every sellable item (still reading the
+     opponent's public tile `yield_units`, never private state). It backs
+     both the premium-preempt fallback (as in 5.8) and the new terminal-
+     liquidation scoring (next item) -- one function, two call sites,
+     instead of bespoke logic in each.
+  3. Terminal liquidation now scores shed items by
+     (1 + opponent_exposure) x glut_weight x price x log1p(quantity)
+     instead of a fixed hand-picked priority tuple -- ported from that
+     agent's `_terminal_market`. It still only *appends* extra SELLs beyond
+     what the route already planned that step (5.9's safer incremental
+     behavior, not the source notebook's full-overwrite), at the same
+     706/708 soft/hard steps 5.9 tuned.
 
-  FIX 1 — Opportunistic shed-surplus sells (_opportunistic_sell, NEW):
-    After all route and relay overlays, sell any MILK, WOOL, STRAWBERRY, or MELON
-    sitting in the shed that hasn't been scheduled by the route this step.  These
-    are PURE OUTPUT products — selling them is always net-positive since they were
-    produced for free and the route doesn't need them as inputs.  Active between
-    steps 50-705 (terminal liquidation takes over after 706).  Threshold: current
-    price ≥ 50% of base price to avoid selling into an already-flooded market.
-    Why this helps: in multiple loss games our route leaves 5-15 units of MILK,
-    WOOL, or STRAWBERRY in the shed between scheduled route-sell steps; the
-    opponent captures those price windows with higher-volume routes.  This overlay
-    harvests those windows without modifying the backbone route.
+One deliberately NEW (not merely ported) piece, flagged here because it is
+NOT yet A/B-validated the way everything above is:
+  4. `_opportunistic_sell`'s fixed "50% of base price" threshold (5.9) is
+     replaced by a reserve price that (a) ramps smoothly from the same 50%
+     down to 15% between step 600 and the terminal-liquidation handoff at
+     706 (5.9 had a hard, sudden switch), and (b) is discounted when the
+     opponent's live tile counts show they can outproduce us of that item
+     (a real, computable "this is about to be a glut, sell now" signal,
+     the same intuition as the source notebook's `_opponent_scale`, without
+     needing its precomputed self-play supply table, which we don't have
+     for our own route). Same item set, same step window, same batch cap as
+     5.9 -- only the threshold computation changed. Recommend an A/B pass
+     (benchmark.py or a real held-out replay) before trusting this piece
+     the way the rest of this file's behavior is trusted.
 
-  FIX 2 — Earlier terminal liquidation (EXTEND):
-    Soft start: 716 → 706.  Full-dump threshold: 718 → 708.  Gives 10 more steps
-    to sell shed surplus at the highest end-game prices (when market inventory is
-    at its lowest and prices are at their peak).  Risk: zero — by step 706 farming
-    actions are winding down and any shed inventory is otherwise unsold.
+The two backbone routes below (_ACTIONS_P0 / _ACTIONS_P1) are unchanged from
+5.9 -- they are the only concretely available, validated route data: every
+_ACTIONS-style blob in every model_score notebook is *someone else's* opaque
+compressed route with no reconstructable generation process, and the one
+notebook with a genuinely generative (non-replay) policy scheduler
+(kaggriculture-rank-your-agent.ipynb's tiered POLICY-driven reference
+agents) is a benchmarking harness for *other* people's agents, not a
+route-construction algorithm applicable here. Regenerating a new backbone
+route was out of scope for this rewrite; P0/P1 (THUNDER THUNDER's best
+replays, ep 91385999 / 91471546) remain the production plan.
 
-  FIX 3 — Opponent type detection + adaptive fertilizer relay (_detect_opponent_type):
-    At step 2, classify the opponent as heavy_animal (≤2 hired hands at step 2,
-    signals COW×3 or SuperFarm) or high_worker (≥4 hands).  Against heavy_animal
-    opponents, increase the fertilizer relay lead from 3 to 6 steps: sell
-    fertilizer 6 steps early instead of 3 to grab higher prices before their
-    larger cow-herd floods the fertilizer market.  Stored in per-seat
-    _OPPONENT_TYPE dict so the classification survives across steps.
-
-MapleLeaf 5.8 — dual-route + opponent-aware premium preemption for Kaggriculture.
-
-Two position-specific routes extracted from THUNDER THUNDER's best replays:
-  P0 backbone: ep 91385999 (139,403 pts — best-scoring THUNDER THUNDER P0 game)
-  P1 backbone: ep 91471546 (148,866 pts — best-scoring THUNDER THUNDER P1 game)
-
-Runtime overlays on top of the route:
-  1. Weed repair          — DIG before BUILD/PLANT on weed tiles; replay intended action
-  2. Repay preemption     — undo shifted premium sells on their original due step
-  3. Price-floor guard    — skip route SELLs priced at $1 floor (market fully saturated)
-  4. Rank sell slots      — reorder SELLs by descending price-impact × demand-urgency
-  5. Preempt shift        — move premium sells 1-3 turns earlier vs near-clone opponents
-  6. Fertilizer relay     — RC2-style: pre-sell FERTILIZER 3 steps early in clone games
-  7. Terminal liquidation — sell all shed inventory in the final 4 steps
-
-Retuned in 5.8 (critical dev-environment fix, same day as the initial 5.8):
-  - Discovered that the local dev/test `kaggle_environments` install (1.32.4)
-    does NOT match the real competition runtime (1.32.6): 1.32.4 has a
-    town-center demand multiplier that ramps 1x/2x/4x by day
-    (`TOWN_CENTER_DEMAND_SCHEDULE`), while 1.32.6 (matching the actual
-    README spec, "flat for the whole season") always consumes 1x. More
-    town consumption drains market inventory faster, which *raises*
-    prices — so every local benchmark this whole project had been
-    validated against was systematically more generous to premium goods
-    than reality. Confirmed via a real Kaggle self-play episode
-    (module_version 1.32.6, seed 0): rewards [44392.0, 46743.0]. Re-running
-    the identical main.py self-play at seed 0 under a freshly installed
-    1.32.6 reproduced that exact score to the dollar; the same test under
-    the local 1.32.4 install gave 124346.0/126530.0 — roughly 3x too high.
-  - Re-ran the 5.7 and 5.8 A/B validations under the correct 1.32.6 engine:
-    both held up directionally (5.7 vs 5.6: +3,281/game; 5.8 vs 5.7:
-    +2,648/game in self-play), but the specific threshold VALUES had been
-    tuned against the wrong absolute price scale. Re-swept the
-    clone-distance gate under 1.32.6 and found a clean, monotonic, and
-    unexpected result: LOOSER is better all the way to fully unconditional.
-    Tighter (5.6-style 6/4/8): -2,497/game. Current 5.7/5.8 (10/7/12):
-    baseline. Looser (14/10/16): +3,106. Very loose (20/16/24): +6,234.
-    Fully unconditional (gate always passes): +6,234-8,273/game across
-    tune, held-out, and cross-opponent seeds — the single best result
-    found, with zero losses recorded against models/5_3.py, 4_1.py, 4_5.py,
-    5_0.py, and no regression anywhere. Conclusion: the clone-distance gate
-    itself was net-negative under real conditions — the OTHER guards
-    (min future quantity, price floor/ratio, shed availability, order cap)
-    are sufficient without it. Set `_PREEMPT_MAX_CLONE_DISTANCE_P0/P1` and
-    `_RELAY_DISTANCE_MAX` to an effectively-infinite sentinel (9999) rather
-    than deleting the gating code, so this is a minimal, exactly-as-tested
-    change rather than an untested refactor.
-  - Net effect: the opponent-tile-reading fallback added earlier in 5.8
-    (see below) is now dormant under these defaults, since the clone gate
-    it was designed to work around no longer excludes anything. Left in
-    place (not deleted) as a defensive fallback in case the gate is ever
-    tightened again — it's inert, not half-finished.
-  - Practical implication for future work: ALWAYS test against
-    `kaggle_environments==1.32.6` (or whatever the competition's current
-    module_version is) before trusting a local A/B result. Don't assume the
-    system-installed version matches production.
-
-New in 5.8 vs 5.7 (initial, same-day superseded by the retune above):
-  - Premium preemption now also reads the OPPONENT's public tile grid
-    directly (farms[i]["tiles"] is visible for both players every turn,
-    including each plant/pasture's live `yield_units`) instead of relying
-    solely on aggregate clone distance. When the opponent is not a
-    near-clone, preemption now still fires for a specific premium item if
-    the opponent has a meaningful amount of that item's yield sitting ready
-    to harvest — a direct, per-opponent signal that generalizes preemption
-    beyond near-mirror games, where it previously almost never fired.
-    Two independent strategy notebooks in model_score/ flagged this exact
-    signal (a large planted block is "a dated announcement of a future
-    sale") as the most valuable unread public-observation data.
-  - Explored a wheat buy-low/sell-high arbitrage (WHEAT and FERTILIZER are
-    the only products buyable back via BUY_PRODUCT) in three designs, all
-    rejected after empirical testing — kept as a documented dead end so it
-    isn't re-attempted blind:
-      1. Fixed "buy below $X" threshold never fired: traced WHEAT price
-         across every available seed/opponent and it never dips below its
-         $25 base against this route family.
-      2. Adaptive "buy near the lowest price seen so far" also never
-         fired: the route spends nearly all starting cash immediately
-         (down to single digits by step 1) and doesn't recover spare cash
-         until price has already risen well past its opening low.
-      3. "Deploy idle late-game cash into wheat" actually fired and looked
-         good in self-play, but tested properly against the unmodified 5.7
-         baseline (tune set AND a held-out seed set) it lost consistently
-         (~-4,700/game): it had no price-relative entry check (bought
-         whenever cash was abundant, not when price was actually good) and
-         force-sold at a fixed step regardless of profitability.
-  - Validated via A/B testing: exactly neutral (0 delta) against
-    same-family opponents (models/5_3.py, 5_5.py, 5_6.py) and noise-level
-    in self-play — the new code path only ever activates when clone
-    distance is already too high for the existing mechanism, so it never
-    changes behavior in games the old gate already covered. Small,
-    consistent positive delta against genuinely different opponents
-    (legacy models/4_1.py, 4_5.py, 4_9.py, 5_0.py: +718, +723, +364, +0),
-    no regression found in any tested matchup.
-
-New in 5.7 vs 5.6:
-  - Widened the premium-preempt and fertilizer-relay clone-distance gates
-    (P0: 6→10, P1: 4→7, relay: 8→12) and lowered _PREEMPT_MIN_FUTURE_QUANTITY
-    (4→2). A replay-parity audit (see improvement.md) flagged these mechanisms
-    as firing too rarely to matter; head-to-head A/B testing against 5.6 across
-    40+ games (self-mirror + vs models/5_3, vs models/5_5, held-out seeds)
-    confirmed a small but consistent and reproducible net-positive delta
-    (+~290/game, win rate 11/20 vs 9/20) with no regression case found.
-  - Explicitly tested and REJECTED a base-price-ratio profit gate for both
-    preemption and fertilizer relay (the audit's "add a profit gate" proposal,
-    read literally). Empirically, premium/fertilizer prices in this game
-    routinely trade well below their configured base price for most of a
-    game (oversupply), so gating on "current price vs base price" suppressed
-    nearly all relay/preempt activity (fertilizer relay fires dropped from
-    44/game to 0/game in testing) instead of filtering out unprofitable ones.
-    Kept the existing checkpoint/clone-distance calibration instead.
-  - Verified route/replay step-indexing empirically (obs.step is 0-indexed and
-    maps 1:1 onto the embedded route arrays with no off-by-one) — a concern
-    raised by the audit that turned out not to apply to this harness.
-
-New in 5.6 vs 5.3:
-  - FERTILIZER relay: checkpoint-based clone detection at steps 216/240/264 (all three
-    must confirm clone_distance ≤ 8). When locked, pre-sell FERTILIZER 3 steps before
-    its route-scheduled step; reduce (repay) the route sell at the original step.
-    Quantity-neutral; gains a 3-turn timing advantage in near-mirror games.
-  - Configuration-aware: agent now accepts optional `configuration` and passes it to
-    sell-scoring, enabling proper regime detection for the Kaggle runtime.
-  - `_regime` aware scoring: demand-urgency weighting activates only in rebalance mode
-    (townCenterSellInterval ≥ 24), matching the official game configuration.
-
-Position-aware adjustments (unchanged from 5.3):
-  - P1 gets a tighter clone-distance threshold than P0 to fire preemption only when
-    the opponent is truly close in farm state, since P1 acts after P0 and market prices
-    already reflect P0's sells.
+Retained unchanged from 5.9 because they are already the canonical,
+convergently-validated implementation (identical code appears, sometimes
+byte-for-byte, in nearly every model_score notebook): weed repair, the
+price-impact SELL-slot ranking formula and demand-urgency weighting, the
+price-floor guard, and opponent-type detection (heavy_animal / high_worker
+by step-2 hired-hand count) -- the latter cross-checked against
+model_score/kaggriculture-what-the-top-farms-do-a-live-meta.ipynb's live-
+meta finding that the current top-ladder modal build runs ~11 hired hands,
+confirming >=4 hands is squarely in the "normal" bucket and <=2 hands
+correctly isolates the low-hire, animal-heavy archetype (COW x3 / SuperFarm)
+that 5.9 built this detector for.
 """
 import base64
 import copy
@@ -186,10 +99,18 @@ _ACTIONS_P1 = json.loads(zlib.decompress(base64.b85decode(
     'c-rk<U2h!8k^C=wo`;<olA`>^rN&;uTv4DX5A21oSim+69DEOZ_jb7dZc3c#>FJD&jLfR$hj!m6iZfkZU0szK84>x@|DF8vmtX(=k6%yz@YBhM%a0#VJ}*xG^~-<%{eK>Q@$lonfBE&l{_(#LKmT;{!}Z<f;eY85-+%h+&zJA7f4saoS)5$mZci3V^Xrd4Y&IWG7N`6F__*1;d-(PCht1{v$>MDC>mN5ax9>;4{&08u?$g!%_yeE+e{pmd*H?f3^kH=U;eLKP*=|1Ge;w%X!|t9(9~;IuzJ2c+yFnaZ<^Ap5{SRNi^zf6t&hDf1I=f-2-~Iik>zj8!Km7Cl)0YQAzIgJN`si;iuQtOZ(J9*f<(H>$^!*S2@&0~zvd(q>I9?R&GRJ>-^sF!MH+SCmUtI<h^!NvOUiNpezv$?DcYnm@W%81tuR9FA@M!G?4qpeBz5YP$_YU9YPl)^=?bm<2{j{5KFdyLq^ym4o@a%L{p5JJ6{ya22zhT$1^U(7AlnH5ge$u>Dp5y+rU^*Uep!Ri#^)~%g?fdNXc3BPV_M2A2{!2EO9T$Nz8=cp{;}40iLvc=c9E2<F>h|Vlb9MjoA2)aR*EiRH`#MZ}o}^Cy!m)*hLB3#r%B2Pht{M(Bn4RRX_wR1c2UL0a>l?=JANl<wFX$u3d*a8<&6m_|^rk#!WH<vfIokQ>RQ@zXA@R=RhyOOuTGX~OlMfwF4ZPvy=j2{9xsR69;czHc1`76nICf=({#k;@7=PSMQ@F|R<AcuA1STKPQe}YCct5oWMp;wg(sqIiLpV&Z8G$^%;ITOq91f6WmW8d<Oi|%Gh8eP-Rc8o%DW0J6Y4Kb6Z1t!+I`fWE%;n_QAMfujx8HB>?*4kRSQih&$q(HR#a_qb^Bk0|N9H~~9X+YmJCRbc1pq3`N2-2q*umLt4bMn(S~Wd>o6ZT4_tAs6#|;?RGdn}zAtJ0Z&Lx!y>99OX-**_8i+^_tGriD53qowXFu??y4qLl%xBygfkQ30Y<>>qUOZt3CTU^kT@sd4pS}y(l?C+H>w+%j-5f;a6^5<fT<|NWzR`2EAUkV2pm`rj^ltG6?hy%V96w)e5@-)SkhO^t?wdMRA4?$14htWwle)wygf!peLzJ}KnJCO8zIF*$LqG#l`94bF0sT5YZ=WqY$-tXLRz6Qg!G~XdN>Dm8j8(pcMDNT?6RVFxSfE-Ya5T{^qdKyPc?E%MgM+hjve1dS{-SwZ;Xd!%(glN`xc3r-iI>}93GZ0u5Fqp%sI2=5WKU5|}2sozKE0p+s7^FV(3O68^iL;VGOD3*@Xf3BAyUlv>KtW5M_)D6qG=_KdL{H#3F@<#=Q&3`caG94C8;tXjrw9vJwh^Y2J`B+XL-8lOL-m0nKn&LCHSr+v?2do5a86KZqs}qV3rJ5e^`!{Mh9HMMJrR4@ufYo;{GxYvw;zIaKm)IRB6)jzv)ie`4!+)Je-8)GyOTI7vtR?dG|56&J!{bWZ_I2QWZ<bJboicOvFYDT@{GgR8dPi&6eMWbUbX?WCW!^A9F?|YR0!U&v`4Ifm%x{=@63|EG>XD3h0m;tAjsDbuklLM$|!OHXHDMHw>qJ+T=sGAYw6urB}^db%`gCRt$B|&KLA_k8C{o=>If0gw)w%wToI)o{4Ly(+daOro~FC~_*Ng$E5uir@-(^xX~E(;J}6@HNSIsHl8m@OvOtkYmnmX}Dnu^{swR+a)0=FHfYWdQU`i{w30U0r5-5<K99B8Gj9I8Qypt(ndcdPlkZrASay_u~vFxG_pwcZ?tXTKqPuVST5)Cfk_UuexuAnRGrj#uhN_<UqG)^lBoQvLMhr*p(x=>Gh^a>g3-2xRi4}bOb<Z8p4vzKfsJQKD71X~v~)~a0@s7;u<)S`nQ%Cj2c!{g%hA&KdkGC?rmv}-w;CsPKCAmJ-F4;d#@D>s>1=@D<tKs(xP?HskJX`RcBH}C1*FB~naPSrOldCFvwih2wuKsJDyCH)C8WE#t&V5_z$NWO=j0i-g`yf`e3VuoeP$pT|d;yVnNbkmzom4m~H>&!w%ny0W;LCxAtjC0oto}v@s9W7~vF$bc5ka`}jX6D|_NaDrAY7=4HIy?-fB~4r~kxwKlr69}mcLRvcxYk5%Oc7CJbTl2xdTJ()(08i~NfTselndJu9kZN@075O)2wa#$iAM)Y2gu(#Ux}p^4Of6s{*Tu;fBu5(;{wU@I~({fo2w>GLH){!d3aDSt50xEGk-ouF>|fPA&>y1h&UG_cc%`ZG1|keGNyGlbo4=I|1j*pX~{%*v{seSf>anJlT}Oh?*`&!nsGv6vxy5tW?-wnYiC%`;_=_9$U*1~a&auy?25$;lp2!wvzT>R5Sp)9xnO}@Qb4RmHrl@2EISFq9mA4VumpRQE06^mc>MeFXtV^);%HW1J3=pKA(os}2`)@_s$BUa1rm?Hnx#SgR8ny5&p?<b*PpoC%p?a}1dccJT{isTC0>ZJvd*2N!hyxuInS7F5@sNgEwLl{x<m40w11>{;Ac^Q002&8t0hFCYn{t)p*Tb++p?_dDQ|?JRD^#a0FdU~OW$dVYF9(NTvn3J{p<~KxUBJpNMPlMkGbp+AUF^OWq00oOMY;Qf=9sBwE*?V!<)fw{;jm7s~~JlyeqV9L;ottT*<>CHmI?02G6M2Q?O632h5EyxgcbUUKLI}qmRg<(7U@$)k@esZT(kwygul|0W`}*nb5VL#sj8vIQ+0vs~}f?472krat|{<hA-zhs#!AC$QjUFA1&YD_C?04ETT0pkFN9}tq<Z{9I{JNwlNf?Vh|vRf_&B~T4`xgs5ix7wOghFkjM^PZFnod4MmH5{KPI?KG1TNS?6S*bIFdTqzI++7=e#I0wS>zi0E#E!mg_0oM2(wH{$V;^9LOsAS_VwLrg+OrpKRM+!|=XC1>#>)MW3%AF_i<JHBLh0%h;CM<6TBqW!PSomb!;zwZgV(y(rZ{jPkQ;5h_u5AEgCYlRV92kiE>`&vjv<k%owUT-=n_$lDMM@m5tZRJzqc^bmk5q%p2R3bGQ<8Q9GEg=W318%;SokLJuc-exaf$$}B!e$57i;0j6Xc=*W%TNji*sDY#5~K*p>_3vaZWZ2n2R=3DU5E)#6Y(BJx$#oo`pn9TG`ANUn`CtW<r2lS0RyJTdhW;zqSgAM`zn<~OG^Q^ENwAx)o@}I&s!DswvY2pQmv5JoZ>V!e)|FZLAO$Z*MQY!qd%c=z(_9y!72hWd?T$8++DwA{z7;TCpD`R6w6!iA`}^uLG_f(+A#{pjFg%b)Q@3Rz&x>#`Y{XL2D#bfWtzPdqFOdMyCk-I=Jg835XxsCDf7ovmy1`H7R!7W!ez<(MX!4&)N41PCZ<c{XSs6!XDJzj9B1AapA|36#-tmB2rhZ0S81M@*)KE^YjTKk_M%qf!^B%5`zm0<yxEu*O%{SQB8%?BZ59&SSgnXT8;5nc``q!XoK4~3OKX(~QtIIe|6&SMivUFGUgj~2QLeo4SDi#Qk-Gl)(W=OJ4=5OV7A&@1$D<b<u$=V1lYj#H8ptz<X(29$veAeVf}4Uqi3kB|iKktnTpKc?E--vAs(1IGY5}AGKFzELYp`oIwPs>t_BT=LVWwe-LW3vz-09Ok4vO5vsM10TkP%3(=saq{7LA`zO}(m=>_j6jL8`6tDj|B3GAdPSM;^MJV0ZHS-vFa1wnBE+5WAL`S|BJ@uYZ)GoQ_iSedT(ljJh`7hNe@iGfCI~D92g7YProE?Wk6QL$O}4_u6XdJ_M_tWqL6)t-u4%Qk#F-C3&7U&r`WfxZH{@9#Z1z#Ns4MTwQ_DY7?Zyl~GHwi2FQqi5=VmTZ-}|s>7zm%;q{eYJl3}J?#1(1YGb^Ng7<A7P(Q4kiRCCDWDi}rUdBv04L=ubekmLvX6gvq5^{pL@1>0b<kRy3{Dqcs00>ut>-K#iX!9#RGcx&(Z%&lGGX@hftq*63{C>1oIRecnQEoFy}`_e61nX3*(=Ad<I=fWwRMLZi<y9d!<!eBJLVl4o;HarkiKo;ldMs%y5aCj3EBxT`#LE2W!OxPnJGZe643{x*lcpyGWd15LlDx_HD{a^ESaRmViPDnsd3@B^m-*5NYGm$)#C15w1%ZfDlu_wc-Hp{CKN&Z<*Qox5~y1aqOL{Jh5$yHupF*I_@Yfdbv9=CcOtFjR)m1^A%IU3-=&$S4>DUex=mQq?B9mUTr+xQBsENL7euzVgpL8ZS3A>mnV<+k;a!uePqUyRW&rYKNq`QP=A_ism=XcTgw#=v)l|upb!cN>G`z8R7Aw`)%{m*?Dv4sw3^HaKS7PkXFl*I>H92QQiv8B90>AynDCn<;V$Rw&Ih69WhP%il&oP#(^6d<RJhIa7F5RAyGcKB`M?C}TT}NeVpwvgea-6fKe?6Sed9A3a`%1%zwf9diCxMwAFAnOC)T^Zg2(+EvD+=4T#3YF(NAZM2DW906lzHC~!<X?8@FpPjx?-$v`;}7M58gYS#aOKeQ}epy^K5)CJbkeL>JENFl$%53#*=_<DV$I=bL7n;=_vd5#<Ek0R-9_PVN>WnXg4R1<F}K*Ty}GGx+5N^0Bhl)gG#zlkhg+^dE&V=EaeB5W$L4__4TQ}V?-yn^?1TCz5onkoRF<PC%X5^GI^ijz%u*7V`hGEYzgGhgldQ&gEW?7Avz1Rmf^>>_2sET-M01laUI^S!e`0oyLL*zS$~iUzX;klmzA&G|2d7?55P~IRT@~g^d%-iqz`RGQ~}b=ip@x>mqCJ1P$34RQMKR1%cmVsS3<3$L3esWM@GC<Z3xPUf(ES8=K)g(qD#b{%c752i5^|?=gW{fi9Qug7uWBm1cXuxbwbyt1bY5TNd?V*8ux@Kp+=ZyyCs*-w|U1=4e^F_R!+W&fmwyFqi0su94m=%^)1;9m>@X5>()m?k#z}bmo!>+OAG3&N3a3r?^-uCk<92S{p|Z0!Eyvk<mxmnJWzC?jR%+~Gn1+WV0wb&PDdPpSJZ!8W5@W**aAMDRe#ic+rCGEwvD#l1Z<OJL<hi=kb%-F7O=a7=-=R4G!hz*D!3@x-b-*4(ZopmU4q2&jEWk0{fIDC_gmR!fU!aof?1YRuiNOlbXa-k0(3?_b3{0=+qU5wGjfPDH=UcEX30B*Cfm82siMJw!7D9KPs7(2>G{w?>&drf$n=QMczj9Bo)(eOvcb%R#nNFi5l(#@KPBgTDwv!yEcFS!C8&`d&Re2vrVBAlYl11Pc)>)Du@!252g<YNOA6%1l>XH)ue580BDJ6-4>yah?DBN<4r<~({s<i-oPiXbgN_+>z@#>k3a_lLB%qB(A+0U{)@k@ki>)Ai>oVuaHttK=X_m#_$O`GmeIkLbk?kw>Yz;0NNe;)_DihI6BJc6ZtgPxy8ZNpzpPn-skaZ(e0^$n_Fwp`%C=Dnp8G6XKxhO8xm*63iqf|Yet;i8f@twzKTFQK;SL-X%9qy=VmR#QNTIe&$QI6BFTCSV5LFt4p{)r69#hPt~MbrY?;J`^?6y>Nj-Ml-AvVy?|6o_i;CUH71%A?DQ&^k&4RJ7LK2MsES`^EAre}@t+!8GMmuB`?EZ6hT?!gfXwQ;9t_lDc-<*e9Qf)D@7DZ;jk;Bwz1ucvqr5gY^~US~;4kv3|1+sbh~9ALC3)zXB$n=)(&XIXar%i_#{wk@ZJAqX19`-b?F*KSiG@6jTX$Cl6tmS5N{AVlKea&PDH1efKkdT-t~&O@a%VxHl`vqWc;Q6&jK7oI8sB;ioIEIZ~>vunQEfP0fn8+YkemR10(=jZuMswzUBggA^TTlWxKyeacN}jG;beHcIo{+Fd-I&&`o?Ze@F$oEwa(w<pev2b!LVVB;cAr|~Zhi6&*6<ICdGV!G43`%ViWM6nZ|WfQH0k9sx2K_pz#ZF-WDI6WSjnE<rS)U0rr!dgst&Ota4n2Rq|aZEjo{N44R;yjH}8v3${h%rNgMZ~Obs61{z8x~<|6RCoSrLc`6j*cW8Bva6HsaCvx&Fh)>E7HKITn`URN=T%|DwTo?*EBjG?Per&##AKTOb?04deWlw%(0XeS+es*sdRK|Xe#N$Ps3i?)UXt=Ru#-6yPk+LkURBc?tt~YiUd!1FQ~$7g@r}Umo4v4eev1O%=R^Aw@^`OMoiF<k=ZVlm1;Xh6Xy!c5lnWbt3b>G%{#)ec#qF6Ln5Vz$2W$`!vXU&8q(xF0k%*0z@e%+PgOwxr}H=p4+e5TZBW)NEhO-*)OTEO0GfO*dfC|t-ZJboKglX0m`oKWSZ_%rwqiM2a($oghbchXlTWs`eVdP)8b7`b=N{|qHv#h<V^pVSuLAzd%InTT=p;e{8|%-3jxC6Nw2ntEP}T+-5UeWx+u*(<v77JRGAlL!G9LSX8T(?{R48!nRjF;V+m%pBt<vDC<b-HV=*A-?j3tr>y80q041HL5@{Nta6uYYtx;WHK&A>neHvDyoZHD99&CTt5&7s)GtAxH{+ahSWmHg7%xN_=Nq~p%^BMg)wFMzuU*uy+`<A#R*Wg|>$ScQ@HO42-XgR5|9@QKJEQ%C#>moiU%)pHmDNZQaF-uX7!B9m%i!x(7<L><!$_r&|2ft3R*2)r&!*QxeM%X0caLxHG=X>>7pGpe<_kdIH+oP(QCBrY(GijYIFY6CM<byHnt+R=yTvlj8eSf0~=b5^MFGbL7XN^MgtHrW3aCr*?Xr3IY8r=FdRlIB}gXRxiCDcHwL*c#glH%+DP(qWyJlk>$KnSua-I7iwQdA0;&SNar*30YH5mP`Z4*hWFF5oJ^ZyZ0t6MJa-sphf^8TAWgvkHl%zIo8G&bm2LH?jeh_#Mrm^t^ZcVxySRo>aN+ny4_9*i<&`MO0t`GD9aT{V6+KGob)WCz;1%=*hjl7_axLHTzYd2o=A+f+18;jMoeOQA3;CWm#vqnmEz+8@&xeQ#3*w3`#q7TuJG&L5s^JxR<dXDr2MRx`o;?P8U~&usC9CK!;-K$vD4^17x_3PoUpNvL9Y2C#dgw^A4*VsGE2OmrQ=qOc6p{++C)>zU`pf_pggm^@f-4Zjk$#6`%l+5?|yy=|L#8#@w}*v%$D->a;*RIKV0)_vkL{YKApC;BpUDWX+zD`GOVQxEuEB9c@s)jGbgPA-R&TFJ>=?*2<~z=AW<_9PnHyDCb~DhZ-(4t7L7V^zH^ztwbKP(H#*$WTW-kH3LC!I0TG{34AmiT3jSJiJCzaRaYCTmSKQ-r9=Rd!oCz2CDea}X?{t`G1*$rckT3==OPN&=z8ZG)0VGxIwhHK=A!DW1)zrT1vhcY_n+xrZ(}s~T!nSfI=t4x^zNMa?O?<=k>~iC!vrsB$Tb4r@TG|oApjtU~Zl<6(;=H+e2O1zYD`xKZot(_O6Z^JBRv)i{mH7XP`BZQ@%77Csw|g|1RIK|2^S*hbVYr%go=V_bKC7-CJZJfkujcB7m@6t{5;1GA_It3O)wXZ4Q$Ghu44hDra7N-x#gHG=w{nz*m}w(4A1T_EcW#6Mjt|yoHXxd6BG{0vP(fo+gTI2(veH%3$8?HR^iXz8AtMDvDr#53SNn%x#Fh5j>{V6W-gFTnG+F~-U>WU&vd`}KLYrboh%H72=->rmshEQk1|{j%$0VaF13R%qXv<t_P(gcB;wqSuRa#9e7!<si;=VS6dh$E2o;*s00Ws+O+m=r@ffJ{_nhma9bmBZPYw!h+)NkbZIulBblQq+nCu~}nbu^Ra;C1vglpJ^{twLl_b+$CCNUm5SN3FhW!qi}+tDuNH{na^8s@XcP?pNFe$-W`>QOpvtXfcpc7G^Invta~wX4Y~qDIimA&x;a=gupm$cE%8Zh_U0=$8&j%C^|?c+iV|V3$+hz2;8Os$h9TrRrw>Tl6yqU{A~xqF$K5c@S4O4XyRIy5f|%Y3A+MGTQKXU8ca~$<O-^8)Ru^hOp<eGjSb5-`Rzs$$NQILFuFZR>~9j@V_=;TjPfw;17?zRnIL>d#gnjP<)xo?o0u$%i`>jZF6m<^k&Sw6C;<o7(&_>Rjb_QF5RG()d_!*))U@O&80Zi<XGOxq%I!qwZ-xcTK85_y!pU&aykhTG)-N~FKs0g-?%Z)UHL#}6s3rfq9Kh(KiI%~)+fdHFNr17bt7n1qv@VdIm|jf~4<-n7i7uakt(qnh6#i-^@Ka0_M6F{iEo_88=^#ZNg=@3iB6OU&%_o6b!o<M4-{FjxxGG{7@Kpuz3?UUM$yO3kc0988JAK=52cdMApc^g!DfFw8?_}A~E+$fBWLlr{{<BRC(kx2C#B%YrQqpg<iiRzam!Vi{yM({|I>4~p2PL#+-Xy>&>COW88DU4T&L8A3W;`-=Q{bl{QMEiW__?0tI5-QU$7LW>qpI0LLlAE*harf}bLLP$<R?SdS7L#7IE-nb+jpf8V&Q6E*ljl<kI?QKtuNQRewC37b6WVORR(Gs_!1F=ynw;*t;rYJX9R&<v!0c11cAL?){YLm&^hcou2YyUqG}C70)9NyD|}Grp21L}eJ&~l3Ql4!vCz}RNBlFp<AEW9t7^hn_~0siXn}WtZ8i(O7;MN&Z`w*H+H;GAoyh@#0@Ce~p>g0bUX~YvMse3vb@f}s=&IbmoG@`6k>Zfh$oXL|OiOE0N)>-J0PjKM^VM6Ct55rIpNG5${B7yI%P>g7@$@A$9hKgcPJBa!nitq?gf%(!Ik6O{Ue9eadJ#!|g1wGr+LO-MT0CDc6HnV51)HuOd9-ec#>~31+d~sw2OJwnD2nDj01K$6Z&kP?flP(2paTE2*E{c<Ev{3XIDync?PIu~Wc$m%v=R2Y&WGDlk(y@oM43;Sb~23hrtbkdu7)bB6^9!|bsJz|K`kKoZ?<Jr6s&|oL?Km5#b*^ntYgCmv9=Q&zah#UhLmnt_&{PvWjQeh7|E~S%KAt_;|Je)nEgpOCOpKngtuS_POm|1qNMVV|ApN~4|rnsYSp7BbpuUJH-{I%#+Zz!mTR^-c?mp3Y25_PMD`u*fsr4mBUn$$+7e)It2fS6z3nYA?E!*yMZ=Vr@+F#fJ%derqm5UR?3E!nJe99kl6LnZoxa49KIH@HAX0btuYi)SYY<$&B$>Te0Q<C7oqDG(?#bKLDoklkMI5pje(wTeHCUV~5EHz9inmf%6L<)lEqqqo9B;-t#4PR!TwWwnO9b2;HdLH0E!}#Jw-^u>Mf#RNQI@<uQb*GW!H~WrAmy^Po4;cO4+yR9Mglprn`qq<lpW>qyECaiC_+i<P$^BGcqzzD>v-+lw?hI@w6Jq%NV;HO*SepUB$#%Ni9U}Psf<@(gU^Z0k}zgMCsFs3<HZ}cSkX1YXSEWLX@cS?aY*F381nQzjeZIb@pX(eBsp|OFsqZT+$OCgdhjWZbWUg+w=X4{y(+ND96kvmsC7>vUs>g`lXpPDBq6pg=_MnabFPO$MbCXyptJeh@66>+Jrdg~5PyF64G_zkq@EQExwZStt%5k|=G0Jh)oK8@-6-VaE^^JP8Jdpr@t@?5e`%TugK4-zOr#lgX--LfU$J3TEJ2llh=ze{3t!h;maMlKkF4kG5cp#Se)4e})CO4|F@%iONs*{9BYNBltARf_0w%JQJ;zsKc!NUMfdIN<(9}jjZuf}OgLAE0Q^T4K`mJrX&f&p;l{TIVd5tMXw#uL?Juh@^Pw=)YO_hVRHaASIDKc#Z5b%UcoWwwYZTk!|jv6gy_V6PIxD?lE9TYeyPG&hX)eaJ^?uD$?U6qS_FzG`#XvsTF)z!u#<jf~uV<8O<tj-EF2o5=`i39JTG>@(lhf1t6rf48TCk%VvJRZo{7$&|O>Uo?xa~Y*>=@~Ms!i~jvnonNI236eIDyfP)Yi-H*gxCcb{%K`sQK%D&x~-km5mgd>Ty#b%1V1Ii3o1&e46Inowyjn}X;*5LRci{V|63@2QjBagrF=`?hGNHrS}VvyOX4|Moq%K9!ZNR{X~mO@W*Rx|TTWlV^+18$LBQwhvH;x%NJT7(3Wh5)D4QcOvngub5$0kn=3_;60d*mZuTx7i+y+W+&==uYL0=JRUq{BAiQd{&!v~%>9)2oyVJ|u~lV_^%jkYCi@~f2FFBKV_iWoEbGBNy_kg8i517IlJY$`atm`_b*Ff6|wUTa_)B8h3qd%9e@<{X(p+Zr%PdE*F%G^I;e*hsc1Qnfoic2h}Ju3KDV|G0{aOyeM?8#l{~-z;6AYcWsDHP%#Rt0*~L#F`fLm5QG<jsTD@*qul%iSb*Db|4xV#;+3dl2j{)VL3@3PQ^+Z9p(`~E^+LGz=(vT(c=p4ARJ9FL1G7U!G5vDzCvHUYIQ6Cmy;-rJU3g>`I=iGhw~NX05sa>ZY#|N&(QxntZNIk(cElFWjeiPT<I&Xmx+U-U9^}qu&3xH5r86%Zmu0Cku?(21aH;pqe&k)xT85^W1Rj`f1H^mP~knWp~oY(hR$2Xel!Bi(K?v^XTe6|0w5-D%ibAukhUO4tu`P3Jm);Q^wjUC0*{%b#w2ZFHk_oWwIA?lz8*-Yv|_xVjr2|3h@{0CfZQb=?ibwe^M3${daWq'
 )))
 
-__version__ = "mapleleaf-5.9-opportunistic-sells-earlier-liquidation"
+__version__ = "mapleleaf-6.0-unified-market-controller"
 
 _PRICE_FLOOR = 1
+_I0 = 10000  # equilibrium / soft-cap inventory shared by every market item
 _DEMAND_ALPHA = 0.25
+
+# (base_price, equilibrium_inventory, scale, below_func, below_target,
+#  above_func, above_target). Unchanged from 5.9 -- independently
+# reimplemented byte-for-byte (down to the curve-shape names) in every one
+# of the nine model_score notebooks that touch the market model, the
+# strongest possible cross-validation that these are the real engine's
+# published constants rather than a locally-fit approximation.
 _MARKET_PARAMS = {
     "WHEAT":       (25,  10000, 400, "sqrt",   0.8, "log",    0.2),
     "CARROT":      (35,  10000, 450, "log",    0.2, "sqrt",   0.7),
@@ -212,59 +133,36 @@ _SHOP_PRODUCTS = {
     "FARMERS_MARKET":("WHEAT", "CARROT", "TOMATO", "STRAWBERRY"),
 }
 _SELLABLE = tuple(_MARKET_PARAMS)
-_LIQUIDATION_ORDER = (
-    "CARROT", "EGG", "FERTILIZER", "MELON", "MILK",
-    "STRAWBERRY", "TOMATO", "WHEAT", "WOOL",
-)
+_PREMIUM = ("STRAWBERRY", "MELON", "MILK", "WOOL")
+_PRODUCT_BY_ANIMAL = {"COW": "MILK", "SHEEP": "WOOL", "GOOSE": "EGG"}
 
-# Official Kaggle competition configuration (rebalance regime)
+# Terminal-liquidation glut weighting, ported from model_score/kaggriculture-
+# findings-from-zero-to-top-meta.ipynb's embedded agent -- roughly tracks
+# each item's `above_target` steepness in _MARKET_PARAMS (steeper curve =
+# more valuable to sell before the opponent's matching output lands).
+_GLUT_WEIGHT = {
+    "STRAWBERRY": 2.0, "MELON": 3.6, "MILK": 2.0, "WOOL": 3.2,
+    "EGG": 1.5, "TOMATO": 1.3, "CARROT": 1.0, "WHEAT": 1.0,
+    "FERTILIZER": 1.0,
+}
+
+_CROPS = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON")
+_ANIMALS = ("COW", "SHEEP", "GOOSE")
+_STRUCTURE_KINDS = ("PASTURE", "COOP")
+_QUADRANTS = ("NW", "NE", "SW", "SE")
+_MAX_ACTORS = 13
+
+# Official Kaggle competition configuration (rebalance regime).
 _DEFAULT_CONFIGURATION = {
     "turnsPerDay": 24,
     "townShopSellInterval": 4,
     "townCenterSellInterval": 24,
 }
 
-_WEED_STATE  = {0: {}, 1: {}}
-_WEED_REPLAY_STEPS = 8
-_SHIFT_STATE = {
-    0: {"last_step": -1, "due_step": -1, "due": {}},
-    1: {"last_step": -1, "due_step": -1, "due": {}},
-}
 
-# Premium preempt parameters (widened in 5.7 — empirically validated via
-# head-to-head A/B sweep against 5.6: clone-distance thresholds and the
-# min-future-quantity floor were needlessly tight, causing the mechanism to
-# rarely fire even in near-mirror games; loosening both was a clean net
-# positive with no observed regression against non-mirror opponents)
-_PREEMPT_ENABLED            = True
-_PREEMPT_FRACTION           = 2.0
-_PREEMPT_MAX_BATCH          = 30
-# Effectively unconditional (see "Retuned in 5.8.1" note above the docstring):
-# re-validated under the correct engine, the clone-distance gate itself was
-# the net-negative — the OTHER guards below (min future quantity, price
-# floor/ratio, shed availability, order cap) are sufficient on their own.
-_PREEMPT_MAX_CLONE_DISTANCE_P0 = 9999
-_PREEMPT_MAX_CLONE_DISTANCE_P1 = 9999
-_PREEMPT_MIN_PRICE_RATIO    = 0.0
-_PREEMPT_MIN_FUTURE_QUANTITY = 2
-_PREEMPT_OPPONENT_READY_THRESHOLD = 4   # min opponent tile yield_units to trust the signal;
-                                          # kept as a dormant fallback (see docstring) in case
-                                          # the clone gate above is ever tightened again
-_PREEMPT_START              = 120
-_PREEMPT_STOP               = 680
-_PREMIUM = ("STRAWBERRY", "MELON", "MILK", "WOOL")
-
-# Fertilizer relay parameters (v16-RC2 concept adapted for dual-route)
-_RELAY_CHECKPOINTS    = (216, 240, 264)   # steps where clone distance is sampled
-_RELAY_DISTANCE_MAX   = 9999              # effectively unconditional — see note above
-_RELAY_LEAD           = 3                 # steps ahead to pre-sell
-_RELAY_START          = 278              # earliest step to relay
-_RELAY_STOP           = 662              # latest step to relay
-_RELAY_STATE = {
-    0: {"last_step": -1, "checks": {}, "locked": False, "due_step": -1, "due": 0},
-    1: {"last_step": -1, "checks": {}, "locked": False, "due_step": -1, "due": 0},
-}
-
+# ===========================================================================
+# Core obs/action helpers -- canonical across every model_score notebook.
+# ===========================================================================
 
 def _get(value, key, default=None):
     if isinstance(value, dict):
@@ -273,11 +171,6 @@ def _get(value, key, default=None):
     if callable(getter):
         return getter(key, default)
     return getattr(value, key, default)
-
-
-def _regime(configuration):
-    interval = int(_get(configuration, "townCenterSellInterval", 12) or 12)
-    return "rebalance" if interval >= 24 else "legacy"
 
 
 def _copy_action(action):
@@ -308,6 +201,10 @@ def _align_hands(action, obs):
     return action
 
 
+def _actions_for_seat(seat):
+    return _ACTIONS_P1 if seat == 1 else _ACTIONS_P0
+
+
 def _shed_access(size):
     half = size // 2
     return {
@@ -317,6 +214,7 @@ def _shed_access(size):
 
 
 def _projected_shed(obs, action):
+    """Shed contents after this step's DROP/PLACE actions land, capped at 100."""
     farm    = _farm(obs, _seat(obs))
     private = _get(obs, "private", {}) or {}
     projected = {
@@ -361,279 +259,116 @@ def _projected_shed(obs, action):
     return projected
 
 
-def _public_signature(farm):
-    keys   = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON",
-              "COW", "SHEEP", "GOOSE", "PASTURE", "COOP", "WEED")
-    counts = {key: 0 for key in keys}
+# ===========================================================================
+# Opponent similarity -- position-aware signature distance.
+# Ported from model_score/kaggriculture-findings-from-zero-to-top-meta.ipynb's
+# embedded `_public_route_signature` / `_signature_distance` (a finer
+# generalization of 5.9's tile-count-only `_public_signature` /
+# `_clone_distance`: it additionally tracks each actor's live (x, y)
+# position and per-item yield totals, not just aggregate tile counts).
+# Gate thresholds that consume this distance stay at 5.9's validated,
+# effectively-unconditional sentinel -- see module docstring point 1.
+# ===========================================================================
+
+def _position(value):
+    try:
+        return (int(value[0]), int(value[1]))
+    except (IndexError, TypeError, ValueError):
+        return (-1, -1)
+
+
+def _public_route_signature(farm):
+    hands   = list(_get(farm, "hands", []) or [])
+    unlocks = set(_get(farm, "unlocked_quadrants", []) or [])
+    positions = [_position(_get(farm, "farmer", (-1, -1)))]
+    positions.extend(_position(item) for item in hands)
+    positions = (positions + [(-1, -1)] * _MAX_ACTORS)[:_MAX_ACTORS]
+    counts = {key: 0 for key in (*_CROPS, *_ANIMALS, *_STRUCTURE_KINDS, "WEED")}
+    yields = {key: 0 for key in (*_CROPS, *_ANIMALS)}
     for row in (_get(farm, "tiles", []) or []):
         for tile in row if isinstance(row, list) else [row]:
             if not isinstance(tile, dict):
                 continue
-            for field in ("crop", "animal", "kind"):
-                value = str(tile.get(field, "")).upper()
-                if value in counts:
-                    counts[value] += 1
-                    break
-    return (
-        len(_get(farm, "hands", []) or []),
-        len(_get(farm, "unlocked_quadrants", []) or []),
-        tuple(counts[key] for key in sorted(counts)),
-    )
+            crop   = str(tile.get("crop", "")).upper()
+            animal = str(tile.get("animal", "")).upper()
+            kind   = str(tile.get("kind", "")).upper()
+            if crop in counts:
+                counts[crop] += 1
+                yields[crop] += max(0, int(tile.get("yield_units", 0) or 0))
+            if animal in counts:
+                counts[animal] += 1
+                yields[animal] += max(0, int(tile.get("yield_units", 0) or 0))
+            if kind in _STRUCTURE_KINDS:
+                counts[kind] += 1
+            if kind == "WEED":
+                counts["WEED"] += 1
+    return {
+        "workers": len(hands),
+        "unlocks": sum(1 << index for index, name in enumerate(_QUADRANTS) if name in unlocks),
+        "positions": [coordinate for point in positions for coordinate in point],
+        "counts": [counts[key] for key in (*_CROPS, *_ANIMALS, *_STRUCTURE_KINDS, "WEED")],
+        "yields": [yields[key] for key in (*_CROPS, *_ANIMALS)],
+    }
+
+
+def _signature_distance(left, right):
+    total  = 12.0 * abs(int(left["workers"]) - int(right["workers"]))
+    total += 7.0 * (int(left["unlocks"]) ^ int(right["unlocks"])).bit_count()
+    left_positions, right_positions = list(left["positions"]), list(right["positions"])
+    for actor in range(_MAX_ACTORS):
+        offset = 2 * actor
+        left_point  = left_positions[offset:offset + 2]
+        right_point = right_positions[offset:offset + 2]
+        if left_point == [-1, -1] and right_point == [-1, -1]:
+            continue
+        weight = 0.8 if actor == 0 else 0.25
+        total += weight * sum(abs(a - b) for a, b in zip(left_point, right_point))
+    left_counts, right_counts = list(left["counts"]), list(right["counts"])
+    for index, (a, b) in enumerate(zip(left_counts, right_counts)):
+        total += (0.25 if index == len(left_counts) - 1 else 3.0) * abs(a - b)
+    total += 0.15 * sum(abs(a - b) for a, b in zip(left["yields"], right["yields"]))
+    return total
 
 
 def _clone_distance(obs):
     farms = list(_get(obs, "farms", []) or [])
     if len(farms) < 2:
         return 10**9
-    left, right = _public_signature(farms[0]), _public_signature(farms[1])
-    return (
-        abs(left[0] - right[0])
-        + 3 * abs(left[1] - right[1])
-        + sum(abs(a - b) for a, b in zip(left[2], right[2]))
-    )
+    return _signature_distance(_public_route_signature(farms[0]), _public_route_signature(farms[1]))
 
 
-_ANIMAL_PREMIUM_ITEM = {"COW": "MILK", "SHEEP": "WOOL"}
-
-
-def _opponent_ready_premium(obs):
-    """Sum of currently-harvestable premium-item units on the opponent's
-    PUBLIC tiles (farms[i]["tiles"] is visible for both players every turn,
-    including each plant/pasture's live `yield_units`). This is a direct,
-    per-opponent signal — unlike clone distance, it works against any
-    opponent, not just near-mirrors of our own farm state."""
+def _opponent_exposure(obs):
+    """Harvestable-now units on the opponent's PUBLIC tiles, per sellable
+    item. Generalizes 5.8's premium-only `_opponent_ready_premium` (farms
+    are visible for both players every turn, including live `yield_units`);
+    used as the premium-preempt fallback signal and to weight terminal-
+    liquidation priority."""
     seat = _seat(obs)
     farm = _farm(obs, 1 - seat)
-    ready = {item: 0 for item in _PREMIUM}
+    exposure = {item: 0.0 for item in _SELLABLE}
     for row in (_get(farm, "tiles", []) or []):
-        for tile in (row if isinstance(row, list) else [row]):
+        for tile in row if isinstance(row, list) else [row]:
             if not isinstance(tile, dict):
                 continue
-            yield_units = max(0, int(tile.get("yield_units", 0) or 0))
-            if yield_units <= 0:
-                continue
-            kind = tile.get("kind")
-            if kind == "PLANT" and tile.get("crop") in ready:
-                ready[tile["crop"]] += yield_units
-            elif kind == "PASTURE":
-                item = _ANIMAL_PREMIUM_ITEM.get(tile.get("animal"))
-                if item in ready:
-                    ready[item] += yield_units
-    return ready
+            yield_units = max(0.0, float(tile.get("yield_units", 0) or 0))
+            crop = str(tile.get("crop", "")).upper()
+            if crop in exposure and yield_units > 0:
+                exposure[crop] += yield_units
+            product = _PRODUCT_BY_ANIMAL.get(str(tile.get("animal", "")).upper())
+            if product in exposure and yield_units > 0:
+                exposure[product] += yield_units
+    return exposure
 
 
-def _shift_state(obs, step):
-    seat  = _seat(obs)
-    state = _SHIFT_STATE[seat]
-    if step == 0 or step < int(state.get("last_step", -1)):
-        state = {"last_step": step, "due_step": -1, "due": {}}
-        _SHIFT_STATE[seat] = state
-    state["last_step"] = step
-    return state
+# ===========================================================================
+# Weed repair -- unchanged; identical implementation across every
+# model_score notebook analyzed (DIG for one step on an unexpected WEED
+# tile, replay the originally-intended action, then trust the bounded
+# replay window before rejoining the route).
+# ===========================================================================
 
-
-def _repay_shift(obs, action, step):
-    if not _PREEMPT_ENABLED:
-        return action
-    state = _shift_state(obs, step)
-    if int(state.get("due_step", -1)) != step:
-        if int(state.get("due_step", -1)) < step:
-            state["due_step"], state["due"] = -1, {}
-        return action
-    due    = {item: max(0, int(quantity)) for item, quantity in dict(state.get("due") or {}).items()}
-    market = []
-    for raw in action.get("market", []) or []:
-        order = list(raw)
-        if len(order) >= 3 and order[0] == "SELL" and due.get(order[1], 0) > 0:
-            item       = order[1]
-            requested  = max(0, int(order[2]))
-            reduction  = min(requested, due[item])
-            requested -= reduction
-            due[item] -= reduction
-            if requested <= 0:
-                continue
-            order[2] = requested
-        market.append(order)
-    action["market"]               = market
-    state["due_step"], state["due"] = -1, {}
-    return action
-
-
-def _actions_for_seat(seat):
-    return _ACTIONS_P1 if seat == 1 else _ACTIONS_P0
-
-
-def _future_sells_at(step, horizon, seat):
-    actions = _actions_for_seat(seat)
-    if step + horizon >= len(actions):
-        return {}
-    result = {}
-    for raw in (actions[step + horizon].get("market") or []):
-        if len(raw) >= 3 and raw[0] == "SELL" and raw[1] in _PREMIUM:
-            result[raw[1]] = result.get(raw[1], 0) + max(0, int(raw[2]))
-    return result
-
-
-def _preempt_shift(obs, action, step):
-    if not _PREEMPT_ENABLED or not (_PREEMPT_START <= step < _PREEMPT_STOP):
-        return action
-    seat           = _seat(obs)
-    max_clone_dist = _PREEMPT_MAX_CLONE_DISTANCE_P1 if seat == 1 else _PREEMPT_MAX_CLONE_DISTANCE_P0
-    state          = _shift_state(obs, step)
-    if state.get("due"):
-        return action
-    clone_ok = _clone_distance(obs) <= max_clone_dist
-    if clone_ok:
-        eligible_items = _PREMIUM
-    else:
-        # Not a near-clone — fall back to reading the opponent's actual tile
-        # state directly. Only items where THEY have a meaningful amount
-        # ready to harvest right now are eligible, so this never fires as a
-        # blind guess; it's gated on direct observed evidence.
-        opponent_ready = _opponent_ready_premium(obs)
-        eligible_items = tuple(
-            item for item in _PREMIUM
-            if opponent_ready.get(item, 0) >= _PREEMPT_OPPONENT_READY_THRESHOLD
-        )
-    if not eligible_items:
-        return action
-    market    = list(action.get("market") or [])
-    if len(market) >= 10:
-        return action
-    remaining = _projected_shed(obs, action)
-    for raw in market:
-        if len(raw) >= 3 and raw[0] == "SELL":
-            item = raw[1]
-            remaining[item] = max(0, int(remaining.get(item, 0) or 0) - max(0, int(raw[2])))
-    prices = _get(_get(obs, "market", {}) or {}, "prices", {}) or {}
-
-    for horizon in (3, 2, 1):
-        future = _future_sells_at(step, horizon, seat)
-        if not future:
-            continue
-        shifted         = {}
-        trial_market    = list(market)
-        trial_remaining = dict(remaining)
-        for item in eligible_items:
-            future_quantity = max(0, int(future.get(item, 0) or 0))
-            if future_quantity < _PREEMPT_MIN_FUTURE_QUANTITY:
-                continue
-            base_price    = float(_MARKET_PARAMS[item][0])
-            current_price = float(_get(prices, item, 0) or 0)
-            if current_price <= _PRICE_FLOOR:
-                continue
-            if current_price < base_price * _PREEMPT_MIN_PRICE_RATIO:
-                continue
-            target = min(
-                max(0, int(trial_remaining.get(item, 0) or 0)),
-                future_quantity,
-                _PREEMPT_MAX_BATCH,
-                max(1, int(round(future_quantity * _PREEMPT_FRACTION))),
-            )
-            if target <= 0 or len(trial_market) >= 10:
-                continue
-            trial_market.append(["SELL", item, target])
-            trial_remaining[item] = max(0, int(trial_remaining.get(item, 0) or 0) - target)
-            shifted[item] = target
-        if shifted:
-            action["market"]  = trial_market[:10]
-            state["due_step"] = step + horizon
-            state["due"]      = shifted
-            return action
-    return action
-
-
-def _relay_state_for(obs, step):
-    seat  = _seat(obs)
-    state = _RELAY_STATE[seat]
-    if step == 0 or step < int(state.get("last_step", -1)):
-        state = {"last_step": step, "checks": {}, "locked": False, "due_step": -1, "due": 0}
-        _RELAY_STATE[seat] = state
-    state["last_step"] = step
-    if step in _RELAY_CHECKPOINTS and step not in state["checks"]:
-        state["checks"][step] = _clone_distance(obs) <= _RELAY_DISTANCE_MAX
-        if all(cp in state["checks"] for cp in _RELAY_CHECKPOINTS):
-            state["locked"] = all(state["checks"].values())
-    return state
-
-
-def _effective_relay_lead(seat):
-    """Relay lead steps: 6 vs heavy-animal opponents (COW×3/SuperFarm-low-hire)
-    to pre-sell before their large herds flood the fertilizer market; 3 otherwise."""
-    if _OPPONENT_TYPE.get(seat) == "heavy_animal":
-        return 6
-    return _RELAY_LEAD
-
-
-def _fertilizer_relay_qty(step, seat):
-    """Quantity of FERTILIZER the route plans to sell at step+effective_lead."""
-    lead        = _effective_relay_lead(seat)
-    future_step = step + lead
-    if not (_RELAY_START <= step <= _RELAY_STOP):
-        return 0
-    actions = _actions_for_seat(seat)
-    if future_step >= len(actions):
-        return 0
-    return sum(
-        max(0, int(order[2]))
-        for order in (actions[future_step].get("market") or [])
-        if len(order) >= 3 and order[0] == "SELL" and order[1] == "FERTILIZER"
-    )
-
-
-def _fertilizer_relay(obs, action, step):
-    """RC2 fertilizer relay: repay previous debt, then pre-sell if clone game is locked."""
-    action = _copy_action(action)
-    seat   = _seat(obs)
-    state  = _relay_state_for(obs, step)
-
-    # Repay: if we pre-sold at a previous step, reduce this step's route sell
-    due_step = int(state.get("due_step", -1))
-    if due_step == step:
-        remaining = max(0, int(state.get("due", 0)))
-        market    = []
-        for raw in (action.get("market") or []):
-            order = list(raw)
-            if (remaining > 0 and len(order) >= 3
-                    and order[0] == "SELL" and order[1] == "FERTILIZER"):
-                requested  = max(0, int(order[2]))
-                reduction  = min(requested, remaining)
-                requested -= reduction
-                remaining -= reduction
-                if requested <= 0:
-                    continue
-                order[2] = requested
-            market.append(order)
-        action["market"]             = market
-        state["due_step"]            = -1
-        state["due"]                 = 0
-    elif 0 <= due_step < step:
-        state["due_step"] = -1
-        state["due"]      = 0
-
-    # Relay: pre-sell FERTILIZER if clone is confirmed and no outstanding debt
-    if not state.get("locked") or state.get("due", 0):
-        return action
-    target = _fertilizer_relay_qty(step, seat)
-    if target <= 0:
-        return action
-    market = [list(o) for o in (action.get("market") or [])]
-    if len(market) >= 10:
-        return action
-    private   = _get(obs, "private", {}) or {}
-    shed      = _get(private, "shed", {}) or {}
-    available = max(0, int(_get(shed, "FERTILIZER", 0) or 0))
-    for o in market:
-        if len(o) >= 3 and o[0] == "SELL" and o[1] == "FERTILIZER":
-            available = max(0, available - max(0, int(o[2])))
-    quantity = min(target, available)
-    if quantity <= 0:
-        return action
-    market.append(["SELL", "FERTILIZER", quantity])
-    action["market"]  = market[:10]
-    state["due_step"] = step + _effective_relay_lead(seat)
-    state["due"]      = quantity
-    return action
+_WEED_STATE = {0: {}, 1: {}}
+_WEED_REPLAY_STEPS = 8
 
 
 def _tile_at(farm, position):
@@ -644,16 +379,15 @@ def _tile_at(farm, position):
         return "LOCKED"
 
 
-def _trace_actor_action(step, actor, seat):
-    actions = _actions_for_seat(seat)
-    trace   = actions[min(max(int(step), 0), len(actions) - 1)] or {}
+def _trace_actor_action(actions, step, actor):
+    trace = actions[min(max(int(step), 0), len(actions) - 1)] or {}
     if actor == "farmer":
         return list(trace.get("farmer") or ["PASS"])
     hands = trace.get("hands", []) or []
     return list(hands[actor] if actor < len(hands) else ["PASS"])
 
 
-def _weed_repair_action(obs, action, step):
+def _weed_repair_action(obs, action, actions, step):
     action = _align_hands(action, obs)
     seat   = _seat(obs)
     game   = _WEED_STATE[seat]
@@ -675,7 +409,7 @@ def _weed_repair_action(obs, action, step):
         if age == 1:
             unit_actions[index] = list(transaction["intended"])
         elif 2 <= age <= 1 + _WEED_REPLAY_STEPS:
-            unit_actions[index] = _trace_actor_action(step - 1, actor, seat)
+            unit_actions[index] = _trace_actor_action(actions, step - 1, actor)
         else:
             active.pop(actor, None)
 
@@ -695,6 +429,285 @@ def _weed_repair_action(obs, action, step):
     action["hands"]  = unit_actions[1:]
     return _align_hands(action, obs)
 
+
+# ===========================================================================
+# Opponent-type detection -- unchanged from 5.9. Cross-validated against
+# model_score/kaggriculture-what-the-top-farms-do-a-live-meta.ipynb's live-
+# meta snapshot (top-ladder modal build ~11 hired hands), confirming these
+# thresholds already isolate the right archetypes.
+# ===========================================================================
+
+_OPPONENT_TYPE = {0: "unknown", 1: "unknown"}
+
+
+def _detect_opponent_type(obs, step):
+    if step != 2:
+        return
+    seat      = _seat(obs)
+    opp_farm  = _farm(obs, 1 - seat)
+    opp_hands = len(_get(opp_farm, "hands", []) or [])
+    if opp_hands <= 2:
+        _OPPONENT_TYPE[seat] = "heavy_animal"
+    elif opp_hands >= 4:
+        _OPPONENT_TYPE[seat] = "high_worker"
+    else:
+        _OPPONENT_TYPE[seat] = "standard"
+
+
+# ===========================================================================
+# Premium preemption + fertilizer relay -- two structurally distinct,
+# independently-tuned mechanisms in 5.9 (per-step multi-horizon search vs.
+# checkpoint-locked single lead), kept as two functions since unifying them
+# would risk conflating separately-validated behaviors, but sharing state-
+# reset and repay helpers to remove 5.9's literal code duplication.
+# ===========================================================================
+
+def _consume_due(market, item, remaining):
+    """Reduce (never below 0) an existing SELL `item` order by up to
+    `remaining` units; drop the order entirely if it hits 0."""
+    out = []
+    for raw in market:
+        order = list(raw)
+        if remaining > 0 and len(order) >= 3 and order[0] == "SELL" and order[1] == item:
+            requested  = max(0, int(order[2]))
+            reduction  = min(requested, remaining)
+            requested -= reduction
+            remaining -= reduction
+            if requested <= 0:
+                continue
+            order[2] = requested
+        out.append(order)
+    return out
+
+
+def _reset_if_new_episode(state, step, empty_factory):
+    if step == 0 or step < int(state.get("last_step", -1)):
+        state = empty_factory()
+    state["last_step"] = step
+    return state
+
+
+_PREEMPT_ENABLED             = True
+_PREEMPT_FRACTION            = 2.0
+_PREEMPT_MAX_BATCH           = 30
+# Effectively unconditional -- see module docstring point 1 and 5.9's own
+# "Retuned in 5.8" note: under the real 1.32.6 engine, tightening this gate
+# was net-negative in every A/B tested; the other guards below (min future
+# quantity, price floor/ratio, shed availability, order cap) carry the load.
+_PREEMPT_MAX_CLONE_DISTANCE_P0 = 9999
+_PREEMPT_MAX_CLONE_DISTANCE_P1 = 9999
+_PREEMPT_MIN_PRICE_RATIO     = 0.0
+_PREEMPT_MIN_FUTURE_QUANTITY = 2
+_PREEMPT_OPPONENT_READY_THRESHOLD = 4
+_PREEMPT_START = 120
+_PREEMPT_STOP  = 680
+
+_SHIFT_STATE = {
+    0: {"last_step": -1, "due_step": -1, "due": {}},
+    1: {"last_step": -1, "due_step": -1, "due": {}},
+}
+
+
+def _shift_state(obs, step):
+    seat = _seat(obs)
+    _SHIFT_STATE[seat] = _reset_if_new_episode(
+        _SHIFT_STATE[seat], step,
+        lambda: {"last_step": step, "due_step": -1, "due": {}},
+    )
+    return _SHIFT_STATE[seat]
+
+
+def _repay_premium_shift(obs, action, step):
+    if not _PREEMPT_ENABLED:
+        return action
+    state = _shift_state(obs, step)
+    if int(state.get("due_step", -1)) != step:
+        if int(state.get("due_step", -1)) < step:
+            state["due_step"], state["due"] = -1, {}
+        return action
+    action = _copy_action(action)
+    market = list(action.get("market") or [])
+    for item, quantity in dict(state.get("due") or {}).items():
+        market = _consume_due(market, item, max(0, int(quantity)))
+    action["market"]               = market
+    state["due_step"], state["due"] = -1, {}
+    return action
+
+
+def _future_sells_at(step, horizon, seat, items):
+    actions = _actions_for_seat(seat)
+    if step + horizon >= len(actions):
+        return {}
+    result = {}
+    for raw in (actions[step + horizon].get("market") or []):
+        if len(raw) >= 3 and raw[0] == "SELL" and raw[1] in items:
+            result[raw[1]] = result.get(raw[1], 0) + max(0, int(raw[2]))
+    return result
+
+
+def _premium_shift(obs, action, step):
+    """3-then-2-then-1-turn-ahead premium preemption (unchanged behavior
+    from 5.9's `_preempt_shift`; opponent-similarity gate re-implemented on
+    the finer `_clone_distance` above but held at the same effectively-
+    unconditional threshold)."""
+    if not _PREEMPT_ENABLED or not (_PREEMPT_START <= step < _PREEMPT_STOP):
+        return action
+    seat           = _seat(obs)
+    max_clone_dist = _PREEMPT_MAX_CLONE_DISTANCE_P1 if seat == 1 else _PREEMPT_MAX_CLONE_DISTANCE_P0
+    state          = _shift_state(obs, step)
+    if state.get("due"):
+        return action
+    if _clone_distance(obs) <= max_clone_dist:
+        eligible_items = _PREMIUM
+    else:
+        opponent_ready = _opponent_exposure(obs)
+        eligible_items = tuple(
+            item for item in _PREMIUM
+            if opponent_ready.get(item, 0) >= _PREEMPT_OPPONENT_READY_THRESHOLD
+        )
+    if not eligible_items:
+        return action
+    market = list(action.get("market") or [])
+    if len(market) >= 10:
+        return action
+    remaining = _projected_shed(obs, action)
+    for raw in market:
+        if len(raw) >= 3 and raw[0] == "SELL":
+            item = raw[1]
+            remaining[item] = max(0, int(remaining.get(item, 0) or 0) - max(0, int(raw[2])))
+    prices = _get(_get(obs, "market", {}) or {}, "prices", {}) or {}
+
+    for horizon in (3, 2, 1):
+        future = _future_sells_at(step, horizon, seat, _PREMIUM)
+        if not future:
+            continue
+        shifted         = {}
+        trial_market    = list(market)
+        trial_remaining = dict(remaining)
+        for item in eligible_items:
+            future_quantity = max(0, int(future.get(item, 0) or 0))
+            if future_quantity < _PREEMPT_MIN_FUTURE_QUANTITY:
+                continue
+            base_price    = float(_MARKET_PARAMS[item][0])
+            current_price = float(_get(prices, item, 0) or 0)
+            if current_price <= _PRICE_FLOOR or current_price < base_price * _PREEMPT_MIN_PRICE_RATIO:
+                continue
+            target = min(
+                max(0, int(trial_remaining.get(item, 0) or 0)),
+                future_quantity,
+                _PREEMPT_MAX_BATCH,
+                max(1, int(round(future_quantity * _PREEMPT_FRACTION))),
+            )
+            if target <= 0 or len(trial_market) >= 10:
+                continue
+            trial_market.append(["SELL", item, target])
+            trial_remaining[item] = max(0, int(trial_remaining.get(item, 0) or 0) - target)
+            shifted[item] = target
+        if shifted:
+            action             = _copy_action(action)
+            action["market"]   = trial_market[:10]
+            state["due_step"]  = step + horizon
+            state["due"]       = shifted
+            return action
+    return action
+
+
+_RELAY_CHECKPOINTS  = (216, 240, 264)
+# Effectively unconditional -- same rationale as _PREEMPT_MAX_CLONE_DISTANCE
+# above; kept as a real checkpoint-lock structure (not just a bare flag) so
+# it stays a meaningful dormant fallback if this gate is ever tightened.
+_RELAY_DISTANCE_MAX = 9999
+_RELAY_LEAD  = 3
+_RELAY_START = 278
+_RELAY_STOP  = 662
+_RELAY_STATE = {
+    0: {"last_step": -1, "checks": {}, "locked": False, "due_step": -1, "due": 0},
+    1: {"last_step": -1, "checks": {}, "locked": False, "due_step": -1, "due": 0},
+}
+
+
+def _relay_state(obs, step):
+    seat  = _seat(obs)
+    state = _reset_if_new_episode(
+        _RELAY_STATE[seat], step,
+        lambda: {"last_step": step, "checks": {}, "locked": False, "due_step": -1, "due": 0},
+    )
+    _RELAY_STATE[seat] = state
+    if step in _RELAY_CHECKPOINTS and step not in state["checks"]:
+        state["checks"][step] = _clone_distance(obs) <= _RELAY_DISTANCE_MAX
+        if all(cp in state["checks"] for cp in _RELAY_CHECKPOINTS):
+            state["locked"] = all(state["checks"].values())
+    return state
+
+
+def _effective_relay_lead(seat):
+    """6 steps vs. heavy-animal opponents (COW x3 / SuperFarm-low-hire) to
+    pre-sell before their larger herd floods the fertilizer market; 3 vs.
+    everyone else. Unchanged from 5.9."""
+    if _OPPONENT_TYPE.get(seat) == "heavy_animal":
+        return 6
+    return _RELAY_LEAD
+
+
+def _repay_fertilizer_relay(obs, action, step):
+    state = _relay_state(obs, step)
+    due_step = int(state.get("due_step", -1))
+    if due_step != step:
+        if 0 <= due_step < step:
+            state["due_step"], state["due"] = -1, 0
+        return action
+    action = _copy_action(action)
+    action["market"] = _consume_due(list(action.get("market") or []), "FERTILIZER", max(0, int(state.get("due", 0))))
+    state["due_step"], state["due"] = -1, 0
+    return action
+
+
+def _fertilizer_relay(obs, action, step):
+    """RC2-style fertilizer relay (unchanged behavior from 5.9): pre-sell
+    FERTILIZER `_effective_relay_lead()` steps early once the checkpoint
+    gate above locks in."""
+    seat  = _seat(obs)
+    state = _relay_state(obs, step)
+    if not state.get("locked") or state.get("due") or not (_RELAY_START <= step <= _RELAY_STOP):
+        return action
+    lead        = _effective_relay_lead(seat)
+    future_step = step + lead
+    actions     = _actions_for_seat(seat)
+    if future_step >= len(actions):
+        return action
+    target = sum(
+        max(0, int(order[2]))
+        for order in (actions[future_step].get("market") or [])
+        if len(order) >= 3 and order[0] == "SELL" and order[1] == "FERTILIZER"
+    )
+    if target <= 0:
+        return action
+    market = [list(o) for o in (action.get("market") or [])]
+    if len(market) >= 10:
+        return action
+    shed      = _get(_get(obs, "private", {}) or {}, "shed", {}) or {}
+    available = max(0, int(_get(shed, "FERTILIZER", 0) or 0))
+    for o in market:
+        if len(o) >= 3 and o[0] == "SELL" and o[1] == "FERTILIZER":
+            available = max(0, available - max(0, int(o[2])))
+    quantity = min(target, available)
+    if quantity <= 0:
+        return action
+    action            = _copy_action(action)
+    market.append(["SELL", "FERTILIZER", quantity])
+    action["market"]  = market[:10]
+    state["due_step"] = step + lead
+    state["due"]      = quantity
+    return action
+
+
+# ===========================================================================
+# Sell-slot ranking by price impact + demand urgency, and the price-floor
+# guard. Unchanged from 5.9 -- explicitly validated as the correct ranking
+# key in model_score/kaggriculture-findings-from-zero-to-top-meta.ipynb's
+# league test (impact-ranked 176-0; ranking by unit price or gross revenue
+# at stake were both tested there and lost).
+# ===========================================================================
 
 def _shape(name, value):
     value = max(0.0, float(value))
@@ -737,7 +750,7 @@ def _impact_score(obs, order):
     market            = _get(obs, "market", {}) or {}
     inventory         = _get(market, "inventory", {}) or {}
     prices            = _get(market, "prices", {}) or {}
-    current_inventory = int(_get(inventory, item, 10000) or 0)
+    current_inventory = int(_get(inventory, item, _I0) or 0)
     current_quote     = float(_get(prices, item, _market_price(item, current_inventory)) or 0)
     later_quote       = float(_market_price(item, current_inventory + quantity))
     return float(quantity) * max(0.0, current_quote - later_quote)
@@ -767,9 +780,9 @@ def _order_score(obs, configuration, order):
     quantity = max(0, int(order[2]))
     market   = _get(obs, "market", {}) or {}
     inventory = _get(market, "inventory", {}) or {}
-    current_inventory = int(_get(inventory, item, 10000) or 0)
+    current_inventory = int(_get(inventory, item, _I0) or 0)
     demand   = max(0.25, _demand_per_day(obs, configuration, item))
-    excess   = max(0.0, current_inventory + quantity - 10000)
+    excess   = max(0.0, current_inventory + quantity - _I0)
     urgency  = min(1.0, (excess / demand) / 10.0)
     return score * (1.0 + _DEMAND_ALPHA * urgency)
 
@@ -795,8 +808,7 @@ def _price_floor_guard(obs, action):
     market = []
     for order in (action.get("market") or []):
         if _is_sell(order):
-            item          = str(order[1])
-            current_price = float(_get(prices, item, 999) or 999)
+            current_price = float(_get(prices, str(order[1]), 999) or 999)
             if current_price <= _PRICE_FLOOR:
                 continue
         market.append(order)
@@ -804,63 +816,87 @@ def _price_floor_guard(obs, action):
     return action
 
 
-def _terminal_liquidation(obs, action, step):
-    if step < 706:
-        return action
-    action  = _copy_action(action)
-    shed    = _get(_get(obs, "private", {}) or {}, "shed", {}) or {}
-    planned = {item: 0 for item in _SELLABLE}
-    for order in action.get("market", []):
-        if _is_sell(order):
-            planned[str(order[1])] += max(0, int(order[2]))
-    for item in _LIQUIDATION_ORDER:
-        available = max(0, int(_get(shed, item, 0) or 0))
-        extra = available if step >= 708 else max(0, available - planned[item])
-        if extra and len(action["market"]) < 10:
-            action["market"].append(["SELL", item, extra])
-    return action
+# ===========================================================================
+# Opportunistic surplus sell -- same item set / step window / batch cap as
+# 5.9, but the fixed "50% of base price" threshold is replaced by a reserve
+# price: ramps 50%->15% of base price between step 600 and the terminal-
+# liquidation handoff (5.9 had a hard switch instead of a ramp), discounted
+# further when the opponent's live tile counts show they can outproduce us
+# of that item (an oversupply race is worth selling into sooner). This
+# piece is new, not ported verbatim -- see module docstring point 4.
+# ===========================================================================
 
+_OPP_SELL_ENABLED     = True
+_OPP_SELL_START       = 50
+_OPP_SELL_STOP        = 705
+_OPP_SELL_BATCH_CAP   = 8
+_OPP_SELL_ITEMS       = ("MILK", "WOOL", "STRAWBERRY", "MELON")
+_OPP_SELL_BASE_FRACTION  = 0.5
+_OPP_SELL_FLOOR_FRACTION = 0.15
+_OPP_SELL_RAMP_START     = 600
+_OPP_SELL_MIN_SUPPLY_FRACTION = 0.5
 
-# Opportunistic sell parameters (5.9)
-_OPP_SELL_ENABLED    = True
-_OPP_SELL_START      = 50
-_OPP_SELL_STOP       = 705      # terminal_liquidation takes over after this
-_OPP_SELL_BATCH_CAP  = 8
-# Only output products (not WHEAT/FERTILIZER which are also route inputs)
-# Threshold = 50% of base price to avoid selling into deeply-flooded markets
-_OPP_SELL_THRESHOLDS = {
-    "MILK":       80,    # base $160 × 0.50
-    "WOOL":       100,   # base $200 × 0.50
-    "STRAWBERRY": 60,    # base $120 × 0.50
-    "MELON":      125,   # base $250 × 0.50
+_SUPPLY_DRIVER = {
+    "MILK": ("animal", "COW"),
+    "WOOL": ("animal", "SHEEP"),
+    "STRAWBERRY": ("crop", "STRAWBERRY"),
+    "MELON": ("crop", "MELON"),
 }
 
-# Opponent type state, detected at step 2 (5.9)
-_OPPONENT_TYPE = {0: "unknown", 1: "unknown"}
+
+def _count_driver(farm, kind, name):
+    total = 0
+    for row in (_get(farm, "tiles", []) or []):
+        for tile in row if isinstance(row, list) else [row]:
+            if not isinstance(tile, dict):
+                continue
+            if kind == "animal":
+                if str(tile.get("animal", "")).upper() == name:
+                    total += 1
+            elif tile.get("kind") == "PLANT" and str(tile.get("crop", "")).upper() == name:
+                total += 1
+    return total
 
 
-def _detect_opponent_type(obs, step):
-    """Classify opponent at step 2 by their hired-hand count (publicly visible)."""
-    if step != 2:
-        return
-    seat     = _seat(obs)
-    opp_farm = _farm(obs, 1 - seat)
-    opp_hands = len(_get(opp_farm, "hands", []) or [])
-    if opp_hands <= 2:
-        _OPPONENT_TYPE[seat] = "heavy_animal"   # COW×3 or SuperFarm low-hire
-    elif opp_hands >= 4:
-        _OPPONENT_TYPE[seat] = "high_worker"
-    else:
-        _OPPONENT_TYPE[seat] = "standard"
+def _opponent_supply_scale(obs, item):
+    """Opponent's estimated remaining output of `item` relative to ours,
+    from live public tile counts (herd size / crop tile count). >1 means
+    they can outproduce us -- an oversupply race, not something worth
+    holding out for a better price on."""
+    driver = _SUPPLY_DRIVER.get(item)
+    if driver is None:
+        return 1.0
+    seat  = _seat(obs)
+    mine  = _count_driver(_farm(obs, seat), *driver)
+    theirs = _count_driver(_farm(obs, 1 - seat), *driver)
+    if mine <= 0:
+        return 2.0 if theirs > 0 else 1.0
+    return max(0.0, min(2.0, theirs / float(mine)))
+
+
+def _threshold_fraction(step):
+    if step <= _OPP_SELL_RAMP_START:
+        return _OPP_SELL_BASE_FRACTION
+    span = max(1, _OPP_SELL_STOP - _OPP_SELL_RAMP_START)
+    t = min(1.0, (step - _OPP_SELL_RAMP_START) / span)
+    return _OPP_SELL_BASE_FRACTION + t * (_OPP_SELL_FLOOR_FRACTION - _OPP_SELL_BASE_FRACTION)
+
+
+def _reserve_price(obs, item, step):
+    base           = float(_MARKET_PARAMS[item][0])
+    fraction       = _threshold_fraction(step)
+    supply_scale   = _opponent_supply_scale(obs, item)
+    supply_discount = min(1.0, 1.0 / max(1.0, supply_scale))
+    supply_discount = max(_OPP_SELL_MIN_SUPPLY_FRACTION, supply_discount)
+    return base * fraction * supply_discount
 
 
 def _opportunistic_sell(obs, action, step):
-    """Sell shed surplus of pure-output products (MILK, WOOL, STRAWBERRY, MELON)
-    that the route leaves unsold between scheduled sell steps.
-    Uses _projected_shed to also catch items workers will drop into shed this step.
-    Only fires when projected shed has inventory beyond what's already being sold
-    and market price is at least 50% of base (avoids selling into deep saturation).
-    """
+    """Sell shed surplus of pure-output products (MILK, WOOL, STRAWBERRY,
+    MELON) that the route leaves unsold between scheduled sell steps.
+    These are pure OUTPUT products -- selling them is always net-positive
+    since they were produced for free and the route doesn't need them as
+    inputs."""
     if not _OPP_SELL_ENABLED or not (_OPP_SELL_START <= step <= _OPP_SELL_STOP):
         return action
     action = _copy_action(action)
@@ -876,22 +912,74 @@ def _opportunistic_sell(obs, action, step):
             item = str(order[1])
             planned_sells[item] = planned_sells.get(item, 0) + max(0, int(order[2]))
 
-    for item, threshold in _OPP_SELL_THRESHOLDS.items():
+    for item in _OPP_SELL_ITEMS:
         if len(market) >= 10:
             break
         current_price = float(_get(prices, item, 0) or 0)
+        threshold     = _reserve_price(obs, item, step)
         if current_price <= _PRICE_FLOOR or current_price < threshold:
             continue
         available = max(0, int(projected.get(item, 0) or 0))
         surplus   = max(0, available - planned_sells.get(item, 0))
         if surplus <= 0:
             continue
-        sell_qty = min(surplus, _OPP_SELL_BATCH_CAP)
-        market.append(["SELL", item, sell_qty])
+        market.append(["SELL", item, min(surplus, _OPP_SELL_BATCH_CAP)])
 
     action["market"] = market[:10]
     return action
 
+
+# ===========================================================================
+# Terminal liquidation -- same 706/708 soft/hard steps and same safe
+# incremental-append behavior as 5.9 (only tops up beyond what the route
+# already planned that step), but the priority order is now a live score
+# (opponent exposure x glut weight x price x log(quantity)) instead of a
+# fixed hand-picked tuple. Ported from model_score/kaggriculture-findings-
+# from-zero-to-top-meta.ipynb's `_terminal_market` -- see module docstring
+# point 3.
+# ===========================================================================
+
+_TERMINAL_SOFT_START = 706
+_TERMINAL_HARD_START = 708
+
+
+def _terminal_liquidation(obs, action, step):
+    if step < _TERMINAL_SOFT_START:
+        return action
+    action  = _copy_action(action)
+    shed    = _get(_get(obs, "private", {}) or {}, "shed", {}) or {}
+    prices  = _get(_get(obs, "market", {}) or {}, "prices", {}) or {}
+    exposure = _opponent_exposure(obs)
+    planned = {item: 0 for item in _SELLABLE}
+    for order in action.get("market", []):
+        if _is_sell(order):
+            planned[str(order[1])] += max(0, int(order[2]))
+    full_dump = step >= _TERMINAL_HARD_START
+
+    rows = []
+    for item in _SELLABLE:
+        available = max(0, int(_get(shed, item, 0) or 0))
+        extra = available if full_dump else max(0, available - planned[item])
+        if extra <= 0:
+            continue
+        score = (
+            (1.0 + exposure.get(item, 0.0))
+            * _GLUT_WEIGHT.get(item, 1.0)
+            * max(1.0, float(_get(prices, item, 1) or 1))
+            * math.log1p(extra)
+        )
+        rows.append((score, item, extra))
+    rows.sort(key=lambda row: row[0], reverse=True)
+    for _score, item, extra in rows:
+        if len(action["market"]) >= 10:
+            break
+        action["market"].append(["SELL", item, extra])
+    return action
+
+
+# ===========================================================================
+# Top-level agent.
+# ===========================================================================
 
 def agent(obs, configuration=None):
     try:
@@ -900,11 +988,12 @@ def agent(obs, configuration=None):
         step    = min(max(0, int(_get(obs, "step", 0) or 0)), len(actions) - 1)
         config  = configuration or _DEFAULT_CONFIGURATION
         _detect_opponent_type(obs, step)
-        action  = _weed_repair_action(obs, _copy_action(actions[step]), step)
-        action  = _repay_shift(obs, action, step)
+        action  = _weed_repair_action(obs, _copy_action(actions[step]), actions, step)
+        action  = _repay_premium_shift(obs, action, step)
+        action  = _repay_fertilizer_relay(obs, action, step)
         action  = _price_floor_guard(obs, action)
         action  = _rank_sell_slots(obs, action, config)
-        action  = _preempt_shift(obs, action, step)
+        action  = _premium_shift(obs, action, step)
         action  = _fertilizer_relay(obs, action, step)
         action  = _opportunistic_sell(obs, action, step)
         action  = _terminal_liquidation(obs, action, step)
