@@ -170,15 +170,146 @@ exit almost immediately.
 
 ## Next things worth trying (not yet done)
 
-- CMA-ES restarts (IPOP/BIPOP) if a run plateaus — a single run can get
-  stuck in one basin.
 - Let the optimizer choose *which* items get front-run at all, not just
   their priority order.
-- A literal "steadier growth" fitness refinement: score on the trend across
-  in-game day-10/20/29 checkpoints, not just the terminal delta.
 - Re-run the Phase A route-mining survey periodically — the ladder
   reshuffles daily and today's "nobody beats Filip's route" result isn't
   permanent.
 - Revive `train.py`/`model.py`'s dormant PPO pipeline for a genuinely
   learned (not scripted) policy, if scripted-route cloning keeps hitting
   diminishing returns as the ladder gets more adaptive.
+
+(CMA-ES restarts on plateau and a checkpoint-weighted "steadier growth"
+fitness were both DONE in v3 below.)
+
+## MapleLeaf 6.7: three real submission bugs found the hard way (2026-08-22)
+
+6.6 was promoted into main.py after round 1's local validation (20/20 vs.
+6.5, +2,303/game) but its ACTUAL Kaggle submission (2026-08-22 20:47) came
+back `SubmissionStatus.ERROR` / "Validation Episode failed" — **it never
+ran on the real ladder at all**. Chasing this down took three attempts,
+each disproven by the next real submission, because every purely-local test
+this project had ever written (direct exec, cold-sandbox exec, passing an
+already-imported function object to `env.run()`) passed cleanly every time
+and never reproduced the failure. **The lesson that mattered most: only
+invoking the agent BY FILE PATH — `env.run(["main.py", "main.py"])`, the
+same mechanism a real Kaggle submission goes through — reproduces this
+whole class of bug locally.** All three fixes below are real and stayed
+in; only the third was actually sufficient by itself, but the first two
+were also worth doing (a genuine drift-safety fix and a genuine robustness
+fix), and none of them mattered until the real one was found.
+
+1. **Attempt 1 (insufficient alone)**: `overlays.py` imported
+   `kaggle_environments.envs.kaggriculture.kaggriculture` (an internal
+   engine submodule) at module load to source its market-price model.
+   Reaching into env internals from a submitted agent is a bad idea
+   regardless of whether it was the actual crash cause — replaced with a
+   hand-copied constant table, verified byte-exact against the installed
+   engine via a new dev-only `overlays._verify_against_live_engine()`.
+   Resubmitted → still `SubmissionStatus.ERROR`, same generic message.
+2. **Attempt 2 (insufficient alone)**: theorized the two-file
+   `main.py`+`overlays.py` structure itself (joined by `import overlays`)
+   was the problem, since every single-file version before 6.6 had
+   validated fine. Built `make_submission.py`, which inlines `overlays.py`'s
+   source into a single merged file via an in-memory `types.ModuleType`
+   (needed because main.py and overlays.py have real top-level name
+   collisions — `_get`/`_farm`/`_seat`/`_copy_action`/`_SHOP_PRODUCTS` — so a
+   flat textual merge would silently clobber them). Resubmitted → still
+   `SubmissionStatus.ERROR`.
+3. **Attempt 3 (the actual root cause)**: downloaded the validation
+   episode's replay directly (`api.competition_episode_replay`) for all
+   three failed submissions — each was 2 steps long, both players ERROR at
+   step 1, farms still in their pristine step-0 state (the very first
+   action never even applied). Reproduced locally for the first time ever
+   by invoking `kaggle_environments.make(...).run(["main.py","main.py"])`
+   with `debug=True`: `NameError: name '__file__' is not defined`, coming
+   from `main.py`'s own `sys.path.insert(0, os.path.dirname(os.path.abspath(
+   __file__)))`. Root cause: `kaggle_environments/agent.py`'s
+   `get_last_callable()` — the function Kaggle's real grading harness (and,
+   confirmed, the local pip package too) uses to load a submitted file by
+   path — `exec()`s the file's source into a **bare `{}` globals dict, with
+   no `__file__` key at all**. That line has been in main.py only since 6.6
+   (added to support `import overlays`), so 6.5 and earlier never hit it —
+   completely independent of both of the first two (real, but insufficient)
+   theories. Fixed with `if "__file__" in globals(): sys.path.insert(...)`.
+   Verified via the real file-path harness (`env.run(["main.py", ...])`,
+   debug=True, full 720 steps) before resubmitting → `SubmissionStatus.
+   COMPLETE`, publicScore 600.0 (a fresh submission's rating before it's
+   played enough ladder games to converge — not directly comparable to an
+   established submission's score yet).
+   **How to apply**: any future "why does this only fail on Kaggle, never
+   locally" mystery should reach for file-path invocation with `debug=True`
+   FIRST, not last — it is the only local test that actually matches how a
+   submission gets loaded.
+
+`make_submission.py` is now the ONLY way a MapleLeaf submission should ever
+be packaged (`python3 make_submission.py --out ... ` then tar just that one
+output file as `main.py`) — never `tar czf ... main.py overlays.py`
+directly, and never submit dev-mode main.py raw. Its `self_test()` exercises
+the real file-path harness automatically on every build.
+
+## Bug found: build_agent.make_agent() shared singleton state with its own opponent (2026-08-22)
+
+While verifying the submission fix, found a SECOND, independent bug while
+diffing `build_agent.make_agent(vec)`'s in-process agent against a
+file-loaded copy of the exact same candidate for the exact same seed: their
+actions diverged at step 215 of a real game (an extra opportunistic SELL
+appeared in one but not the other). Root cause: `make_agent()` used real
+`import main as _base; import overlays` — real imports are cached as ONE
+singleton module in `sys.modules`, SHARED by every agent in the process that
+also does a real import of the same module. `benchmark.load_agent(path)`
+sets `ns["__file__"] = path` before exec'ing, so any opponent file that
+itself contains a bare `import overlays` (main.py always does) hits that
+*same* cached singleton — meaning a CMA-ES candidate and an opponent playing
+against it in the same worker process were silently sharing mutable
+per-seat state (confirmed: `overlays._OPPONENT_TYPE[1]` was being written by
+the opponent's own self-classification calls and read back by "our" module
+instance). **This means evolve.py's fitness signal was never as clean as
+intended whenever a path-based opponent (any real `.py` file, not a replay)
+was in the pool — round 1's `{main_6.5, legacy_6.3}` and round 2's `{main_
+6.6, legacy_6.3}` pool entries both qualify.** Not re-litigated retroactively
+(round 1's winner is still what's live), but v3 onward is clean: `build_agent
+.make_agent()` now builds `main`/`overlays` as freshly-exec'd, mutually
+isolated `types.ModuleType` instances (reusing `make_submission.
+build_merged_source()`) every call, with zero `sys.modules` involvement —
+verified by re-running the same diff test post-fix and getting byte-identical
+results between the in-process and file-loaded paths.
+**How to apply**: never add a real `import main`/`import overlays` back into
+any in-process evaluation code path. If a new tool needs to build an agent
+in-process, route it through `build_agent.make_agent()` or
+`make_submission.build_merged_source()`, never a bare `import`.
+
+## evolve.py v3 (2026-08-22) — fixes round 2's regression-guard dilution + two "next things" from above
+
+Round 2's postmortem (above) identified the real failure: widening the
+opponent pool to 26 for diversity diluted the baseline-regression check
+(beat the current promoted version) down to ~1/26 (~4%) of the fitness
+signal, so the tuner optimized for the wrong thing and lost 2/20 to the
+actual baseline on real validation despite a higher raw fitness number.
+v3's fixes, all in the same run:
+
+1. **Protected regression guard**: the current baseline (main.py) is no
+   longer just one more pool entry — it gets a dedicated seed set sized to
+   always be `BASELINE_FRACTION` (25%) of total games/candidate regardless
+   of diverse-pool size, PLUS an explicit penalty
+   (`REGRESSION_PENALTY_MULT * baseline_mean_delta` when negative) added on
+   top if the candidate loses to it on average.
+2. **Checkpoint-weighted "steadier growth" scoring**: per-game score is now
+   a weighted trend across three in-game checkpoints (steps 239/479/718,
+   weights 0.15/0.25/0.60) instead of just the terminal delta — free
+   (reads `env.steps`' already-simulated observations, no extra games),
+   rewards a candidate that leads throughout the episode over one that's
+   only ahead at the final tally.
+3. **IPOP-style restarts**: on plateau, doubles popsize and restarts from
+   the current best point (up to `--max-restarts`, default 3) instead of
+   just stopping — a single CMA-ES run can get stuck in one basin.
+
+Diverse pool unchanged from v2's methodology (legacy 6.3 + 3 real episodes
+each from the 8 least self-consistent/most-adaptive top-20 players, per the
+methodology section above) — 25 opponents as of this run. See
+`evolve_checkpoint_v3.json` / `evolve_v3.log` for live results; only promote
+a winner into main.py after it beats the current baseline on a real
+`benchmark.py` validation run (same promotion-gate discipline as round 1),
+built via `build_agent.write_self_contained_candidate()` (NOT the old
+multi-file `write_candidate()`, removed) and verified via
+`make_submission.py`-style file-path self-test before ever submitting.

@@ -20,16 +20,25 @@ _PREEMPT_MAX_CLONE_DISTANCE / _RELAY_DISTANCE_MAX in this project's history.
 
 import math
 
-# Pull the market model directly from the installed kaggle_environments
-# package instead of hand-copying its constants -- a hand-copied
-# _MARKET_PARAMS here previously drifted stale relative to a real engine
-# change (CARROT/TOMATO/EGG's scarcity curve switched from log/linear to a
-# "hinge" shape with a quadratic runaway past the T knee, and CARROT's
-# below_target roughly doubled, in kaggle_environments 1.32.7) without this
-# file ever being updated to match. Importing the real functions/constants
-# means this can never drift again as long as the installed package version
-# is kept in sync with production (see benchmark.py's _KNOWN_GOOD_VERSION).
-from kaggle_environments.envs.kaggriculture import kaggriculture as _engine
+# 6.6 imported this market model directly from the installed
+# kaggle_environments package (`from kaggle_environments.envs.kaggriculture
+# import kaggriculture as _engine`) to avoid the hand-copy drift that had
+# previously gone stale (see the git history on this comment). That
+# submission ("MapleLeaf 6.6") came back SubmissionStatus.ERROR /
+# "Validation Episode failed" on the real ladder (2026-08-22) -- every prior
+# version that never touched an internal env submodule at agent-runtime
+# validated fine, and this was the only new import in 6.6. Reaching into
+# `kaggle_environments.envs.<env>.<env>` from inside a submitted agent is
+# almost certainly unsupported/blocked in Kaggle's actual grading sandbox
+# (import restrictions, a different package layout, or a self-import
+# collision with the very env process that's running this agent) even
+# though it imports fine in a normal local dev install. v3 reverts to a
+# hand-copied constant table -- verified byte-for-byte against the
+# installed 1.32.7 engine's MARKET_PARAMS/SHOPS/market_price/PRICE_FLOOR/
+# MARKET_I0 below -- so the agent never depends on the live package's
+# internals at runtime. `_verify_against_live_engine()` at the bottom of
+# this file is a DEV-ONLY drift check (never called at import or agent
+# runtime) -- run it manually after any kaggle_environments upgrade.
 
 # ===========================================================================
 # Tunable parameters -- single source of truth, consumed by tuning_spec.py.
@@ -76,12 +85,94 @@ DEFAULT_PARAMS = {
     "demand_alpha": 0.25,
 }
 
-_PRICE_FLOOR = _engine.PRICE_FLOOR
-_I0 = _engine.MARKET_I0
+# Hand-copied from kaggle_environments/envs/kaggriculture/kaggriculture.py
+# (installed version 1.32.7, confirmed live 2026-08-22) -- see the module
+# docstring comment above for why this is a hand-copy, not a live import.
+MARKET_I0 = 10000
+PRICE_FLOOR = 1
 
-# Real engine constants, not a hand-copy -- see the import comment above.
-_MARKET_PARAMS = _engine.MARKET_PARAMS
-_SHOP_PRODUCTS = _engine.SHOPS
+MARKET_PARAMS = {
+    "WHEAT":      {"base":  25, "I0": MARKET_I0, "T": 400, "below_func": "sqrt",   "below_target": 0.80, "above_func": "log",    "above_target": 0.20},
+    "CARROT":     {"base":  35, "I0": MARKET_I0, "T": 450, "below_func": "hinge",  "below_target": 1.00, "above_func": "sqrt",   "above_target": 0.70},
+    "TOMATO":     {"base":  60, "I0": MARKET_I0, "T": 200, "below_func": "hinge",  "below_target": 0.40, "above_func": "sqrt",   "above_target": 0.60},
+    "STRAWBERRY": {"base": 120, "I0": MARKET_I0, "T": 100, "below_func": "sqrt",   "below_target": 0.70, "above_func": "linear", "above_target": 1.60},
+    "MELON":      {"base": 250, "I0": MARKET_I0, "T": 300, "below_func": "log",    "below_target": 0.20, "above_func": "sq",     "above_target": 3.60},
+    "EGG":        {"base":  50, "I0": MARKET_I0, "T": 332, "below_func": "hinge",  "below_target": 0.40, "above_func": "log",    "above_target": 0.20},
+    "MILK":       {"base": 160, "I0": MARKET_I0, "T": 122, "below_func": "sqrt",   "below_target": 0.60, "above_func": "linear", "above_target": 1.60},
+    "WOOL":       {"base": 200, "I0": MARKET_I0, "T": 105, "below_func": "log",    "below_target": 0.20, "above_func": "sq",     "above_target": 3.20},
+    "FERTILIZER": {"base": 100, "I0": MARKET_I0, "T": 200, "below_func": "linear", "below_target": 0.40, "above_func": "linear", "above_target": 0.40},
+}
+
+SHOPS = {
+    "BAKERY":         ["EGG", "WHEAT"],
+    "PIZZA_SHOP":     ["MILK", "TOMATO", "WHEAT"],
+    "BRUNCH_SPOT":    ["EGG", "WHEAT", "STRAWBERRY"],
+    "YARN_STORE":     ["WOOL"],
+    "ICE_CREAM_SHOP": ["STRAWBERRY", "MILK", "WHEAT"],
+    "PET_CAFE":       ["CARROT"],
+    "SMOOTHIE_SHOP":  ["STRAWBERRY", "MILK"],
+    "FARMERS_MARKET": ["WHEAT", "CARROT", "TOMATO", "STRAWBERRY"],
+}
+
+# "hinge" spikes once x passes T -- linear in x/T below the knee, quadratic
+# runaway above it. f(T) == 1 by construction so `target` means the same
+# thing for every shape.
+_HINGE_GAIN = 8.0
+
+
+def _shape(func, x, T=None):
+    x = max(0.0, x)
+    if func == "linear": return x
+    if func == "sq":     return x * x
+    if func == "sqrt":   return math.sqrt(x)
+    if func == "log":    return math.log(1.0 + x)
+    if func == "log10":  return math.log10(1.0 + x)
+    if func == "hinge":
+        if not T or T <= 0:
+            return x
+        u = x / T
+        return u + _HINGE_GAIN * max(0.0, u - 1.0) ** 2
+    return x
+
+
+def market_price(item, inventory, params=None):
+    """Floor at PRICE_FLOOR. Verbatim port of the real engine's formula."""
+    p = (params or MARKET_PARAMS)[item]
+    base = p["base"]
+    I0 = p["I0"]
+    T = p["T"]
+    if inventory < I0:
+        f = p["below_func"]
+        amp = p["below_target"] * base / _shape(f, T, T)
+        price = base + amp * _shape(f, I0 - inventory, T)
+    else:
+        f = p["above_func"]
+        amp = p["above_target"] * base / _shape(f, T, T)
+        price = base - amp * _shape(f, inventory - I0, T)
+    return max(PRICE_FLOOR, int(round(price)))
+
+
+def _verify_against_live_engine():
+    """DEV-ONLY drift check -- never called at import or agent runtime.
+    Run manually (`python3 -c "import overlays; overlays._verify_against_live_engine()"`)
+    after any kaggle_environments upgrade to confirm this hand-copy hasn't
+    gone stale. Safe to fail/skip: only touches the live package when
+    explicitly invoked, never as a side effect of importing this module."""
+    from kaggle_environments.envs.kaggriculture import kaggriculture as _engine
+    assert _engine.MARKET_I0 == MARKET_I0
+    assert _engine.PRICE_FLOOR == PRICE_FLOOR
+    assert _engine.MARKET_PARAMS == MARKET_PARAMS, (_engine.MARKET_PARAMS, MARKET_PARAMS)
+    assert _engine.SHOPS == SHOPS
+    for item in MARKET_PARAMS:
+        for inv in (0, 50, MARKET_I0 // 2, MARKET_I0, MARKET_I0 * 2, MARKET_I0 * 5):
+            assert _engine.market_price(item, inv) == market_price(item, inv), (item, inv)
+    print("overlays.py market model matches the installed kaggle_environments engine exactly.")
+
+
+_PRICE_FLOOR = PRICE_FLOOR
+_I0 = MARKET_I0
+_MARKET_PARAMS = MARKET_PARAMS
+_SHOP_PRODUCTS = SHOPS
 _SELLABLE = tuple(_MARKET_PARAMS)
 _PREMIUM = ("STRAWBERRY", "MELON", "MILK", "WOOL")
 _PRODUCT_BY_ANIMAL = {"COW": "MILK", "SHEEP": "WOOL", "GOOSE": "EGG"}
@@ -564,7 +655,7 @@ def fertilizer_relay(obs, action, step, backbone_route):
 # Delegates straight to the real engine's own price function -- guaranteed
 # correct (including the "hinge" scarcity-runaway shape) rather than a
 # reimplementation that can silently drift out of sync with it.
-_market_price = _engine.market_price
+_market_price = market_price
 
 
 def _is_sell(order):

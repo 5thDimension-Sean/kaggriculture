@@ -4,18 +4,36 @@ tuning_spec.py). Two use modes:
 
   1. In-process (used by evolve.py's fitness evaluation): call
      make_agent(params_vector) to get a live agent(obs) callable in the
-     current Python process. Cheap -- no file I/O.
+     current Python process.
 
-  2. Materialize a standalone candidate file (for benchmark.py CLI /
-     `kaggle competitions submit`): write_candidate(params_vector, out_path)
-     writes a self-contained .py that imports main.py + overlays.py from the
-     same directory and defines agent()/`_kaggle_submission_entrypoint`,
-     exactly like every other MapleLeaf version.
+  2. Materialize a standalone submission-safe candidate file:
+     write_self_contained_candidate(params_vector, out_path).
+
+Both modes build main.py + overlays.py as ISOLATED, freshly-exec'd modules
+(via make_submission.build_merged_source(), types.ModuleType) rather than
+real `import main`/`import overlays` statements. This matters, not just for
+Kaggle submission safety (see make_submission.py's docstring), but for
+CORRECTNESS of evolve.py's own fitness evaluation: a real `import overlays`
+caches ONE singleton module in sys.modules, shared by EVERY agent in the
+process that also does a real import of it -- including any opponent loaded
+via benchmark.load_agent() with __file__ set (e.g. "main.py", used as
+evolve.py v3's own dedicated baseline opponent!). That means a candidate
+built via a real `import main`/`import overlays` was silently sharing
+mutable per-seat state (overlays._OPPONENT_TYPE, _MIRROR_STATE, etc.) with
+its own opponent whenever both were real-imported in the same worker
+process -- found 2026-08-22 by diffing a candidate's actions between this
+(old, buggy) in-process path and the isolated file-based path for the exact
+same params vector and seed: they diverged (an extra opportunistic SELL
+appeared in the correctly-isolated version), traced to
+_OPPONENT_TYPE[1] being polluted by the opponent's own self-classification
+calls bleeding into the candidate's "isolated" module instance. Every prior
+evolve.py run (v1, v2) built candidates this same buggy way, so their
+fitness numbers carried some amount of this contamination too -- not
+re-litigated here, but v3 onward is clean.
 
 The default params vector (tuning_spec.default_vector()) reproduces main.py's
-current (6.5) behavior exactly -- every revived overlay defaults OFF, so a
-freshly-cloned repo with no tuning run yet behaves identically to the shipped
-agent. Only a CMA-ES-discovered vector that wins a real benchmark should ever
+pre-CMA-ES-tuning (6.5) behavior exactly -- every revived overlay defaults
+OFF. Only a CMA-ES-discovered vector that wins a real benchmark should ever
 be promoted into main.py itself.
 """
 
@@ -24,75 +42,49 @@ import os
 import tuning_spec
 
 
+def _isolated_modules():
+    """Fresh, mutually-isolated (main, overlays) module pair -- no
+    sys.modules caching, so no possibility of sharing state with any other
+    agent instance in the same process (see module docstring)."""
+    import make_submission
+    merged_src = make_submission.build_merged_source()
+    ns = {"__file__": os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")}
+    exec(compile(merged_src, "main.py", "exec"), ns)
+    return ns
+
+
 def make_agent(params_vector):
     """Returns a live agent(obs) function combining main.py + overlays.py,
-    configured with the given params vector. Mutates both modules' shared
-    global state (main._BASE_PARAMS, main._FR_ITEMS, overlays._P) -- callers
-    running many candidates in one process must call this again (or re-import)
-    before evaluating a different candidate; safe within a single process
-    since main.agent()'s own per-episode state dicts self-reset on step==0."""
-    import main as _base
-    import overlays
-
+    configured with the given params vector, in a freshly-built isolated
+    module pair (see module docstring for why not a real import)."""
+    ns = _isolated_modules()
     base_params, overlay_params, fr_order = tuning_spec.vector_to_params(params_vector)
-    _base.configure_base(base_params)
-    _base._FR_ITEMS = fr_order
-    overlays.configure(overlay_params)
-
-    def agent(obs):
-        try:
-            step = min(max(0, int(_base._get(obs, "step", 0) or 0)), len(_base._ACTIONS) - 1)
-            action = _base._weed_repair_action(obs, _base._copy_action(_base._ACTIONS[step]), step)
-            state = _base._fr_state(obs, step)
-            action = _base._repay(action, state, step)
-            action = overlays.repay_premium_shift(obs, action, step)
-            action = overlays.repay_fertilizer_relay(obs, action, step)
-            action = _base._front_run(action, obs, state, step)
-            overlays._detect_opponent_type(obs, step)
-            action = overlays.price_floor_guard(obs, action, step)
-            action = overlays.rank_sell_slots(obs, action)
-            action = overlays.premium_shift(obs, action, step, _base._ACTIONS)
-            action = overlays.fertilizer_relay(obs, action, step, _base._ACTIONS)
-            action = overlays.opportunistic_sell(obs, action, step)
-            action = overlays.terminal_liquidation(obs, action, step)
-            return _base._align_hands(action, obs)
-        except Exception:
-            farm = _base._farm(obs, _base._seat(obs))
-            return {
-                "farmer": ["PASS"],
-                "hands": [["PASS"] for _ in (_base._get(farm, "hands", []) or [])],
-                "market": [],
-            }
-
-    return agent
+    ns["configure_base"](base_params)
+    ns["_FR_ITEMS"] = fr_order
+    ns["overlays"].configure(overlay_params)
+    return ns["agent"]
 
 
-_CANDIDATE_TEMPLATE = '''"""MapleLeaf 6.6 candidate -- generated by build_agent.py, do not hand-edit.
-
-Composed from main.py's route + core overlays plus overlays.py's revived
-market-intelligence overlays, configured with the params vector below (found
-by evolve.py's CMA-ES search). See tuning_spec.py for what each name means.
-"""
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import build_agent
-
-PARAMS_VECTOR = {params_vector!r}
-
-agent = build_agent.make_agent(PARAMS_VECTOR)
-
-
-def _kaggle_submission_entrypoint(obs, configuration=None):
-    return agent(obs)
-'''
-
-
-def write_candidate(params_vector, out_path):
+def write_self_contained_candidate(params_vector, out_path):
+    """Write a SINGLE self-contained .py -- no dependency on
+    build_agent.py/main.py/overlays.py/tuning_spec.py being present
+    alongside it -- the only form safe to actually submit to Kaggle (see
+    make_submission.py's docstring). Reuses make_submission.build_merged_source()
+    and appends the CMA-ES-searched params as a configure_base/
+    overlays.configure override, resolved to concrete literal dicts at build
+    time via tuning_spec.vector_to_params -- so the written file needs no
+    tuning_spec.py at runtime either."""
+    import make_submission
+    merged = make_submission.build_merged_source()
+    base_params, overlay_params, fr_order = tuning_spec.vector_to_params(params_vector)
+    override = (
+        "\n# --- CMA-ES candidate override (build_agent.write_self_contained_candidate) ---\n"
+        f"configure_base({base_params!r})\n"
+        f"_FR_ITEMS = {fr_order!r}\n"
+        f"overlays.configure({overlay_params!r})\n"
+    )
     with open(out_path, "w") as f:
-        f.write(_CANDIDATE_TEMPLATE.format(params_vector=list(params_vector)))
+        f.write(merged + override)
     return out_path
 
 
@@ -112,5 +104,5 @@ if __name__ == "__main__":
         with open(args.from_checkpoint) as f:
             ckpt = json.load(f)
         vec = ckpt["best_params"]
-    write_candidate(vec, args.out)
-    print(f"Wrote candidate -> {args.out}")
+    write_self_contained_candidate(vec, args.out)
+    print(f"Wrote self-contained candidate -> {args.out}")
