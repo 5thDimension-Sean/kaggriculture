@@ -135,6 +135,39 @@ to be thrown out). **Fix that worked**: `ps -eo pid,ppid,cmd | grep '<cmd>' | aw
 grep/pgrep alone can match transient wrapper processes with lower PIDs that
 exit almost immediately.
 
+## Round 2 (26-opponent, least-consistent-8 pool): NEGATIVE RESULT (2026-08-22)
+
+- 8 generations, ~19 min wall-clock (~140s/gen, consistent). Plateaued
+  immediately: best fitness 18,005.8 hit at generation 2, generations 3-8
+  all came in below that (17,820-17,978, a ~160 spread) with no new record
+  -- a real plateau, not early noise, so the run was stopped manually per
+  the 20-minute check-in rather than waiting out the full 20-generation
+  auto-stop for what looked like the same flat result.
+- **Benchmarked against v1 (current main.py) and LOST: 2/20 games,
+  -458/game.** Despite a higher fitness number than round 1 ever reached,
+  that fitness is on a different, non-comparable scale (bigger opponent
+  pool, bigger score swings from harder opponents) and does not translate
+  to winning the actual promotion gate.
+- **Root cause**: opponent-pool weighting diluted the regression guard.
+  Round 1's pool was `{main_6.5, legacy_6.3, 1 real replay}` -- beating the
+  actual baseline was 1/3 of the fitness signal. Round 2's pool was
+  `{main_6.6, legacy_6.3, 24 real replays from the 8 hardest players}` --
+  beating the baseline dropped to 1/26 (~4%) of the signal. The tuner
+  optimized for the new harder pool at the expense of the one matchup that
+  actually determines promotion.
+- **Verdict: discarded, not promoted.** `main.py` is unchanged from the
+  round-1 winner.
+- **Fix for a future attempt**: don't let the baseline-regression check
+  compete equally with every other opponent in the average -- duplicate
+  `main.py` several times in the pool (so it's weighted like 15-20% of the
+  signal, not 4%), or score it as a separate hard constraint ("candidate
+  fitness = diverse-pool-fitness, but reject/heavily penalize any candidate
+  that loses to the current baseline on its own dedicated seed set") rather
+  than just one more entry in a flat average. Widening the opponent pool
+  for robustness and protecting the regression guard are two different
+  needs; round 2 conflated them into one averaged score and lost the
+  regression guard as a result.
+
 ## Next things worth trying (not yet done)
 
 - CMA-ES restarts (IPOP/BIPOP) if a run plateaus — a single run can get
