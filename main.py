@@ -90,6 +90,27 @@ _FR_STATE = {
 }
 _WEED_STATE = {0: {}, 1: {}}
 _WEED_REPLAY_STEPS = 8
+
+# Tunable knobs for main.py's own overlays (weed repair + front-run demand
+# forecast). Defaults reproduce exact 6.5 behavior; configure_base() lets
+# evolve.py's CMA-ES search patch these without editing this file. See
+# tuning_spec.py for the search bounds these are drawn from.
+_BASE_PARAMS = {
+    "weed_replay_steps": _WEED_REPLAY_STEPS,
+    "town_demand_pulse_period": 24,
+    "town_demand_check_interval": 4,
+    "town_demand_single_shop_bonus": 2,
+    "town_demand_multi_shop_bonus": 1,
+}
+
+
+def configure_base(params):
+    global _WEED_REPLAY_STEPS, _BASE_PARAMS
+    _BASE_PARAMS = dict(_BASE_PARAMS)
+    _BASE_PARAMS.update(params or {})
+    _WEED_REPLAY_STEPS = int(_BASE_PARAMS["weed_replay_steps"])
+
+
 _SHOP_PRODUCTS = {
     "BAKERY": ("EGG", "WHEAT"),
     "PIZZA_SHOP": ("MILK", "TOMATO", "WHEAT"),
@@ -211,14 +232,18 @@ def _fr_state(obs, step):
 
 
 def _town_demand_now(obs, item, step):
-    demand = 1 if item != "FERTILIZER" and step % 24 == 0 else 0
-    if step % 4 != 0:
+    pulse_period = int(_BASE_PARAMS["town_demand_pulse_period"])
+    check_interval = int(_BASE_PARAMS["town_demand_check_interval"])
+    demand = 1 if item != "FERTILIZER" and step % pulse_period == 0 else 0
+    if step % check_interval != 0:
         return demand
     town = _get(obs, "town", {}) or {}
+    single_bonus = _BASE_PARAMS["town_demand_single_shop_bonus"]
+    multi_bonus = _BASE_PARAMS["town_demand_multi_shop_bonus"]
     for shop in list(_get(town, "unlocked_shops", []) or []):
         products = _SHOP_PRODUCTS.get(shop, ())
         if item in products:
-            demand += 2 if len(products) == 1 else 1
+            demand += single_bonus if len(products) == 1 else multi_bonus
     return demand
 
 

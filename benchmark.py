@@ -46,7 +46,7 @@ import textwrap
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-_KNOWN_GOOD_VERSION = "1.32.6"  # the module_version seen on real competition episodes
+_KNOWN_GOOD_VERSION = "1.32.7"  # confirmed live 2026-08-22 via a fresh episode's module_version field
 
 
 def load_agent(path):
