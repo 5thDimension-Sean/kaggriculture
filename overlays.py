@@ -20,6 +20,17 @@ _PREEMPT_MAX_CLONE_DISTANCE / _RELAY_DISTANCE_MAX in this project's history.
 
 import math
 
+# Pull the market model directly from the installed kaggle_environments
+# package instead of hand-copying its constants -- a hand-copied
+# _MARKET_PARAMS here previously drifted stale relative to a real engine
+# change (CARROT/TOMATO/EGG's scarcity curve switched from log/linear to a
+# "hinge" shape with a quadratic runaway past the T knee, and CARROT's
+# below_target roughly doubled, in kaggle_environments 1.32.7) without this
+# file ever being updated to match. Importing the real functions/constants
+# means this can never drift again as long as the installed package version
+# is kept in sync with production (see benchmark.py's _KNOWN_GOOD_VERSION).
+from kaggle_environments.envs.kaggriculture import kaggriculture as _engine
+
 # ===========================================================================
 # Tunable parameters -- single source of truth, consumed by tuning_spec.py.
 # ===========================================================================
@@ -65,30 +76,12 @@ DEFAULT_PARAMS = {
     "demand_alpha": 0.25,
 }
 
-_PRICE_FLOOR = 1
-_I0 = 10000
+_PRICE_FLOOR = _engine.PRICE_FLOOR
+_I0 = _engine.MARKET_I0
 
-_MARKET_PARAMS = {
-    "WHEAT":       (25,  10000, 400, "sqrt",   0.8, "log",    0.2),
-    "CARROT":      (35,  10000, 450, "log",    0.2, "sqrt",   0.7),
-    "TOMATO":      (60,  10000, 200, "linear", 0.4, "sqrt",   0.6),
-    "STRAWBERRY":  (120, 10000, 100, "sqrt",   0.7, "linear", 1.6),
-    "MELON":       (250, 10000, 300, "log",    0.2, "sq",     3.6),
-    "EGG":         (50,  10000, 332, "linear", 0.4, "log",    0.2),
-    "MILK":        (160, 10000, 122, "sqrt",   0.6, "linear", 1.6),
-    "WOOL":        (200, 10000, 105, "log",    0.2, "sq",     3.2),
-    "FERTILIZER":  (100, 10000, 200, "linear", 0.4, "linear", 0.4),
-}
-_SHOP_PRODUCTS = {
-    "BAKERY":         ("EGG", "WHEAT"),
-    "PIZZA_SHOP":     ("MILK", "TOMATO", "WHEAT"),
-    "BRUNCH_SPOT":    ("EGG", "WHEAT", "STRAWBERRY"),
-    "YARN_STORE":     ("WOOL",),
-    "ICE_CREAM_SHOP": ("STRAWBERRY", "MILK", "WHEAT"),
-    "PET_CAFE":       ("CARROT",),
-    "SMOOTHIE_SHOP":  ("STRAWBERRY", "MILK"),
-    "FARMERS_MARKET": ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY"),
-}
+# Real engine constants, not a hand-copy -- see the import comment above.
+_MARKET_PARAMS = _engine.MARKET_PARAMS
+_SHOP_PRODUCTS = _engine.SHOPS
 _SELLABLE = tuple(_MARKET_PARAMS)
 _PREMIUM = ("STRAWBERRY", "MELON", "MILK", "WOOL")
 _PRODUCT_BY_ANIMAL = {"COW": "MILK", "SHEEP": "WOOL", "GOOSE": "EGG"}
@@ -463,7 +456,7 @@ def premium_shift(obs, action, step, backbone_route):
             future_qty = max(0, int(future.get(item, 0) or 0))
             if future_qty < _P["premium_shift_min_future_qty"]:
                 continue
-            base_price = float(_MARKET_PARAMS[item][0])
+            base_price = float(_MARKET_PARAMS[item]["base"])
             current_price = float(_get(prices, item, 0) or 0)
             if current_price <= _PRICE_FLOOR:
                 continue
@@ -568,24 +561,10 @@ def fertilizer_relay(obs, action, step, backbone_route):
 # guard.
 # ===========================================================================
 
-def _shape(name, value):
-    value = max(0.0, float(value))
-    if name == "linear": return value
-    if name == "sq":     return value * value
-    if name == "sqrt":   return math.sqrt(value)
-    if name == "log":    return math.log1p(value)
-    raise ValueError(name)
-
-
-def _market_price(item, inventory):
-    base, equilibrium, scale, below_func, below_target, above_func, above_target = _MARKET_PARAMS[item]
-    if inventory < equilibrium:
-        amplitude = below_target * base / _shape(below_func, scale)
-        price = base + amplitude * _shape(below_func, equilibrium - inventory)
-    else:
-        amplitude = above_target * base / _shape(above_func, scale)
-        price = base - amplitude * _shape(above_func, inventory - equilibrium)
-    return max(_PRICE_FLOOR, int(round(price)))
+# Delegates straight to the real engine's own price function -- guaranteed
+# correct (including the "hinge" scarcity-runaway shape) rather than a
+# reimplementation that can silently drift out of sync with it.
+_market_price = _engine.market_price
 
 
 def _is_sell(order):
@@ -690,7 +669,7 @@ def _threshold_fraction(step):
 
 
 def _reserve_price(obs, item, step):
-    base = float(_MARKET_PARAMS[item][0])
+    base = float(_MARKET_PARAMS[item]["base"])
     fraction = _threshold_fraction(step)
     supply_scale = _opponent_supply_scale(obs, item)
     supply_discount = min(1.0, 1.0 / max(1.0, supply_scale))
