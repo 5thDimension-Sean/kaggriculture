@@ -11,7 +11,7 @@ Usage:
     python3 evolve.py --generations 50       # run a bounded number of generations
     python3 evolve.py --resume               # continue from evolve_checkpoint.json
     python3 evolve.py --report               # print current best without running anything
-    nohup python3 evolve.py > evolve.log 2>&1 &   # for real long-running background use
+    nohup python3 -u evolve.py > evolve.log 2>&1 &   # for real long-running background use
 
 Fitness (per candidate params vector):
     For every (opponent, seed, seat) triple in the opponent pool, play a real
@@ -25,6 +25,20 @@ Fitness (per candidate params vector):
     to set here since this isn't a step-by-step policy, but this is the
     CMA-ES equivalent of that intent.
 
+Opponent pool (v2): one real replay game from EVERY currently-downloaded
+top-20 player (top-players-data/*/manifest.json) plus the current main.py
+and the revived legacy 6.3 script, for maximum diversity against overfitting
+to a narrow test set -- a v1 run with only 3 opponents found a real +2,303/
+game winner, but a broader pool makes it much harder for CMA-ES to find a
+params vector that only exploits quirks of a small fixed test set.
+
+Parallelization: v1 parallelized at the CANDIDATE level (one pool task per
+population member), which wasted most of a 110-worker pool whenever
+popsize < workers (only ever using popsize-many workers per generation).
+v2 flattens every (candidate, opponent, seed, orientation) combination into
+one big task list and parallelizes at the GAME level instead, so all
+workers stay busy regardless of population size.
+
 Convergence: if the best fitness hasn't improved by more than NOISE_FLOOR
 over STAGNATION_WINDOW generations, the run logs "converged" and stops
 automatically -- this is a fixed-size parameter search (the route itself is
@@ -34,6 +48,7 @@ overlays (a new tuning_spec.SPEC), not more generations on this one.
 """
 
 import argparse
+import glob
 import json
 import multiprocessing as mp
 import os
@@ -47,20 +62,45 @@ import tuning_spec
 
 CHECKPOINT_PATH_DEFAULT = "evolve_checkpoint.json"
 LAMBDA_VARIANCE = 0.35
-STAGNATION_WINDOW = 15
-NOISE_FLOOR = 150.0  # per-game $ -- smaller than the environmental noise floor measured empirically (~150-3000/game)
-SEEDS_PER_MATCHUP = 3
-
-OPPONENTS = [
-    {"kind": "path", "value": "main.py", "name": "main_6.5"},
-    {"kind": "path", "value": "opponents/legacy_6_3.py", "name": "legacy_6.3"},
-    {"kind": "replay", "value": ("top-players-data/ReCurSiON/episode-96975971-replay.json", 1), "name": "ReCurSiON_real"},
-]
+STAGNATION_WINDOW = 20
+NOISE_FLOOR = 100.0  # per-game $ -- recalibrated down from v1's 150 now that more games/candidate shrinks real per-generation noise
+SEEDS_PER_MATCHUP = 2
 
 _SEEDS = [
     7030039913, 1767950141, 2067004398, 4263648760, 3313394522,
     3101419947, 3930751749, 5948990031, 3837117532, 2455163851,
 ]
+
+
+def _build_opponent_specs(player_data_dir="top-players-data", episodes_per_player=1):
+    """One (or more) real replay opponent per currently-downloaded top player,
+    plus the two script opponents. Returns a list of dicts consumable by
+    both _worker_init (path/replay loading) and the checkpoint log."""
+    specs = [
+        {"kind": "path", "value": "main.py", "name": "main_6.6"},
+        {"kind": "path", "value": "opponents/legacy_6_3.py", "name": "legacy_6.3"},
+    ]
+    if not os.path.isdir(player_data_dir):
+        return specs
+    for player_dir in sorted(os.listdir(player_data_dir)):
+        full = os.path.join(player_data_dir, player_dir)
+        manifest_path = os.path.join(full, "manifest.json")
+        if not os.path.isdir(full) or not os.path.exists(manifest_path):
+            continue
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        for entry in manifest[:episodes_per_player]:
+            ep_path = os.path.join(full, f"episode-{entry['episode_id']}-replay.json")
+            if os.path.exists(ep_path):
+                specs.append({
+                    "kind": "replay",
+                    "value": (ep_path, entry["seat"]),
+                    "name": f"{player_dir}_{entry['episode_id']}",
+                })
+    return specs
+
+
+OPPONENTS = _build_opponent_specs()
 
 _worker_state = {}
 
@@ -79,28 +119,29 @@ def _worker_init():
             agent = benchmark.make_replay_agent(episode_path, player_index)
         opponents.append({"name": spec["name"], "agent": agent})
     _worker_state["opponents"] = opponents
+    _worker_state["agent_cache"] = {}  # candidate_key -> built agent, reused across tasks in this worker
 
 
-def _evaluate(params_vector):
-    """Runs in a worker process. Returns (fitness, mean_delta, std_delta, n_games)."""
+def _get_candidate_agent(candidate_key, params_vector):
+    cache = _worker_state["agent_cache"]
+    if cache.get("key") != candidate_key:
+        cache.clear()
+        cache["key"] = candidate_key
+        cache["agent"] = _worker_state["build_agent"].make_agent(params_vector)
+    return cache["agent"]
+
+
+def _play_game_task(task):
+    """One game. task = (candidate_key, params_vector, opponent_idx, seed, candidate_is_p0)."""
+    candidate_key, params_vector, opponent_idx, seed, candidate_is_p0 = task
     benchmark = _worker_state["benchmark"]
-    build_agent = _worker_state["build_agent"]
-    candidate = build_agent.make_agent(params_vector)
-
-    deltas = []
-    for opp in _worker_state["opponents"]:
-        for i in range(SEEDS_PER_MATCHUP):
-            seed_p0 = _SEEDS[i % len(_SEEDS)]
-            seed_p1 = _SEEDS[(i + len(_SEEDS) // 2) % len(_SEEDS)]
-            sa, sb = benchmark.run_game(candidate, opp["agent"], seed_p0)
-            deltas.append(sa - sb)
-            sb2, sa2 = benchmark.run_game(opp["agent"], candidate, seed_p1)
-            deltas.append(sa2 - sb2)
-
-    mean_delta = statistics.mean(deltas)
-    std_delta = statistics.pstdev(deltas) if len(deltas) > 1 else 0.0
-    fitness = mean_delta - LAMBDA_VARIANCE * std_delta
-    return fitness, mean_delta, std_delta, len(deltas)
+    candidate = _get_candidate_agent(candidate_key, params_vector)
+    opponent = _worker_state["opponents"][opponent_idx]["agent"]
+    if candidate_is_p0:
+        sa, sb = benchmark.run_game(candidate, opponent, seed)
+    else:
+        sb, sa = benchmark.run_game(opponent, candidate, seed)
+    return candidate_key, sa - sb
 
 
 def _to_normalized(real_vector):
@@ -134,6 +175,7 @@ def report(path):
     print(f"Generation: {ckpt['generation']}")
     print(f"Best fitness so far: {ckpt['best_fitness']:.1f}  (mean_delta={ckpt['best_mean_delta']:.1f}, std_delta={ckpt['best_std_delta']:.1f})")
     print(f"Converged: {ckpt.get('converged', False)}")
+    print(f"Opponent pool size: {len(ckpt.get('opponents', []))}")
     print(f"Best params (name=value):")
     for name, value in zip(tuning_spec.NAMES, ckpt["best_params"]):
         print(f"  {name:34s} {value}")
@@ -185,8 +227,11 @@ def main():
     es = cma.CMAEvolutionStrategy(x0_norm, sigma0, opts)
 
     pool = mp.Pool(processes=args.workers, initializer=_worker_init)
-    print(f"evolve.py: {tuning_spec.DIM} dims, popsize={es.popsize}, workers={args.workers}, "
-          f"opponents={[o['name'] for o in OPPONENTS]}, seeds/matchup={SEEDS_PER_MATCHUP}")
+    n_opponents = len(OPPONENTS)
+    games_per_candidate = n_opponents * SEEDS_PER_MATCHUP * 2
+    print(f"evolve.py v2: {tuning_spec.DIM} dims, popsize={es.popsize}, workers={args.workers}, "
+          f"opponents={n_opponents} ({[o['name'] for o in OPPONENTS]}), "
+          f"seeds/matchup={SEEDS_PER_MATCHUP}, games/candidate={games_per_candidate}")
 
     try:
         while not es.stop():
@@ -196,11 +241,35 @@ def main():
 
             solutions_norm = es.ask()
             solutions_real = [_to_real(s) for s in solutions_norm]
+
+            # Flatten every (candidate, opponent, seed, orientation) combo into
+            # one task list so all workers stay busy regardless of popsize.
+            tasks = []
+            for cand_idx, params_vector in enumerate(solutions_real):
+                for opp_idx in range(n_opponents):
+                    for s in range(SEEDS_PER_MATCHUP):
+                        seed_a = _SEEDS[(cand_idx * SEEDS_PER_MATCHUP + s) % len(_SEEDS)]
+                        seed_b = _SEEDS[(cand_idx * SEEDS_PER_MATCHUP + s + len(_SEEDS) // 2) % len(_SEEDS)]
+                        tasks.append((cand_idx, params_vector, opp_idx, seed_a, True))
+                        tasks.append((cand_idx, params_vector, opp_idx, seed_b, False))
+
             t0 = time.time()
-            results = pool.map(_evaluate, solutions_real)
+            deltas_by_candidate = {i: [] for i in range(len(solutions_real))}
+            for cand_idx, delta in pool.map(_play_game_task, tasks, chunksize=4):
+                deltas_by_candidate[cand_idx].append(delta)
             elapsed = time.time() - t0
 
-            fitnesses = [r[0] for r in results]
+            fitnesses = []
+            mean_deltas = []
+            std_deltas = []
+            for i in range(len(solutions_real)):
+                d = deltas_by_candidate[i]
+                m = statistics.mean(d)
+                s = statistics.pstdev(d) if len(d) > 1 else 0.0
+                fitnesses.append(m - LAMBDA_VARIANCE * s)
+                mean_deltas.append(m)
+                std_deltas.append(s)
+
             es.tell(solutions_norm, [-f for f in fitnesses])  # cma minimizes
 
             gen_best_idx = max(range(len(fitnesses)), key=lambda i: fitnesses[i])
@@ -211,11 +280,10 @@ def main():
             if gen_best_fitness > best_fitness:
                 best_fitness = gen_best_fitness
                 best_params = solutions_real[gen_best_idx]
-                best_mean_delta = results[gen_best_idx][1]
-                best_std_delta = results[gen_best_idx][2]
+                best_mean_delta = mean_deltas[gen_best_idx]
+                best_std_delta = std_deltas[gen_best_idx]
 
-            n_games_total = sum(r[3] for r in results)
-            print(f"[gen {generation}] pop={len(results)} games={n_games_total} "
+            print(f"[gen {generation}] pop={len(solutions_real)} games={len(tasks)} "
                   f"elapsed={elapsed:.1f}s  gen_best={gen_best_fitness:.1f}  "
                   f"overall_best={best_fitness:.1f} (mean={best_mean_delta:.1f} std={best_std_delta:.1f})")
 
@@ -235,6 +303,7 @@ def main():
                 "sigma0": float(es.sigma),
                 "converged": converged,
                 "param_names": tuning_spec.NAMES,
+                "opponents": [o["name"] for o in OPPONENTS],
             })
 
             if converged:
