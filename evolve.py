@@ -72,17 +72,42 @@ _SEEDS = [
 ]
 
 
-def _build_opponent_specs(player_data_dir="top-players-data", episodes_per_player=1):
-    """One (or more) real replay opponent per currently-downloaded top player,
-    plus the two script opponents. Returns a list of dicts consumable by
-    both _worker_init (path/replay loading) and the checkpoint log."""
+def _least_consistent_players(summary_path="routes_6_6/_summary.json", n=8):
+    """Rank players by route_mining.py's self-consistency score (ascending --
+    least consistent / most adaptive first) and return the bottom `n` names.
+    These are the players who *aren't* running a fixed script, so beating
+    their real games is a meaningfully harder, more representative test than
+    the highly-consistent ones (which are closer to clonable bots -- see
+    ReCurSiON/Kobe BRYANT at 94-95% vs. Crop Dusta/Arman Tuganbaev/Subramanya
+    N/Kaan Dınız at ~50%, per the Phase A survey)."""
+    if not os.path.exists(summary_path):
+        return []
+    with open(summary_path) as f:
+        data = json.load(f)
+    rows = []
+    for r in data:
+        vals = [r.get(seat, {}).get("overall_consistency") for seat in ("p0", "p1")]
+        vals = [v for v in vals if v is not None]
+        if vals:
+            rows.append((sum(vals) / len(vals), r["name"]))
+    rows.sort()
+    return [name for _avg, name in rows[:n]]
+
+
+def _build_opponent_specs(player_data_dir="top-players-data", episodes_per_player=3, n_players=8):
+    """Real replay opponents drawn from the LEAST consistent (most adaptive)
+    top players only, plus the two script opponents. Multiple episodes per
+    player so each hard opponent is represented by more than one sample of
+    their (non-repeating) behavior, not just whichever the majority-vote
+    self-consistency check saw first."""
     specs = [
         {"kind": "path", "value": "main.py", "name": "main_6.6"},
         {"kind": "path", "value": "opponents/legacy_6_3.py", "name": "legacy_6.3"},
     ]
-    if not os.path.isdir(player_data_dir):
+    targets = _least_consistent_players(n=n_players)
+    if not targets or not os.path.isdir(player_data_dir):
         return specs
-    for player_dir in sorted(os.listdir(player_data_dir)):
+    for player_dir in targets:
         full = os.path.join(player_data_dir, player_dir)
         manifest_path = os.path.join(full, "manifest.json")
         if not os.path.isdir(full) or not os.path.exists(manifest_path):
