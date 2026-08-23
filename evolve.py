@@ -1,32 +1,43 @@
-"""evolve.py -- v4 CMA-ES self-improvement loop for MapleLeaf 6.7.
+"""evolve.py -- v5 CMA-ES self-improvement loop for MapleLeaf 6.8.
 
-Searches tuning_spec.SPEC's ~49 continuous knobs (main.py's own overlay
+Searches tuning_spec.SPEC's ~60 continuous knobs (main.py's own overlay
 constants + every revived overlays.py mechanism's thresholds/gates + v4's
-new per-item front-run enable gates) to maximize a variance-penalized,
-trend-aware fitness against a diverse opponent pool, WITH a protected,
-heavily-weighted regression guard against the current baseline (main.py) --
-see FITNESS below.
+per-item front-run enable gates + v5's per-item opportunistic-sell reserve
+fractions and shed-capacity overflow guard) to maximize a variance-
+penalized, trend-aware fitness against a diverse opponent pool, WITH a
+protected, heavily-weighted regression guard against the current baseline
+(main.py) -- see FITNESS below.
 
 Usage:
     python3 evolve.py                       # run indefinitely, checkpointing every generation
     python3 evolve.py --generations 50       # run a bounded number of generations (total, across restarts)
-    python3 evolve.py --resume               # continue from evolve_checkpoint_v4.json
+    python3 evolve.py --resume               # continue from evolve_checkpoint_v5.json
     python3 evolve.py --report               # print current best without running anything
-    nohup python3 -u evolve.py > evolve_v4.log 2>&1 &   # for real long-running background use
+    nohup python3 -u evolve.py > evolve_v5.log 2>&1 &   # for real long-running background use
 
-Why v4 (postmortem of v3, see TUNING_NOTES.md): two independent v3 runs
-(100+ generations each, one with a genuine IPOP restart) both converged to
-essentially the same fitness ceiling (~6,600-6,700) with the baseline delta
-hovering near zero -- a real signal that v3's 40-dim search space had been
-largely exhausted by round 1's original tuning, not a fluke of one run. A
-route re-survey (also in TUNING_NOTES.md) found nothing better than the
-current Filip Strzalka backbone either, so the route stays fixed. v4 widens
-the search space with the one concrete unexplored lever from the "next
-things" list: 9 new boolean gates (`fr_enabled_<ITEM>`) let CMA-ES fully
-EXCLUDE an item from front-running, not just deprioritize it -- previously
-every item was always front-run (only the ORDER was tunable). Default
-vector still reproduces the exact unconditional-front-run behavior every
-prior version used (all gates default ON).
+Why v5 (postmortem of v4, see TUNING_NOTES.md): v4's own best-fitness
+checkpoint, warm-started into v5's wider space and validated with a real
+40-game benchmark, still LOST to the current baseline (-367/game) -- same
+pattern as v3's false positive. Two independent parameter searches (v3, v4)
+across a combined ~150+ generations have now failed to find anything that
+survives real validation, a strong signal that pure retuning of the
+EXISTING overlay mechanisms has hit a real ceiling. v5 adds two genuinely
+NEW, safe (reorder/retime-only, no new sell VOLUME beyond what's already
+owned) mechanisms mined from real public Kaggriculture notebooks instead of
+just widening the same knobs further:
+  1. Per-item opportunistic-sell reserve fractions (was one shared pair for
+     all of MILK/WOOL/STRAWBERRY/MELON -- a real public notebook uses
+     distinct per-item values ranging 0.40-0.68).
+  2. A shed-capacity overflow guard: confirmed empirically that our OWN
+     route drives shed occupancy to EXACTLY the engine's 100-item hard cap
+     around steps 432-480, identically across every seed tested (a route-
+     timing artifact, not opponent-dependent) -- a real, if narrow, source
+     of silently lost production. Forces extra sells of already-owned
+     surplus (cheapest items first) when projected occupancy would breach
+     a tunable threshold below the cap.
+Default vector for both reproduces the exact prior (v4) behavior -- new
+per-item fractions default to the same values the old shared pair used,
+and the guard defaults OFF.
 
 Why v3 (postmortem of round 2, see TUNING_NOTES.md):
 
@@ -93,7 +104,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import tuning_spec
 
-CHECKPOINT_PATH_DEFAULT = "evolve_checkpoint_v4.json"
+CHECKPOINT_PATH_DEFAULT = "evolve_checkpoint_v5.json"
 LAMBDA_VARIANCE = 0.35
 STAGNATION_WINDOW = 20
 NOISE_FLOOR = 100.0  # per-game $
@@ -391,7 +402,7 @@ def main():
     diverse_games_per_cand = n_diverse * SEEDS_PER_MATCHUP * 2
     n_baseline_per_cand = _n_baseline_games(diverse_games_per_cand)
     total_games_per_cand = diverse_games_per_cand + n_baseline_per_cand
-    print(f"evolve.py v4: {tuning_spec.DIM} dims, workers={args.workers}, "
+    print(f"evolve.py v5: {tuning_spec.DIM} dims, workers={args.workers}, "
           f"diverse_opponents={n_diverse} ({[o['name'] for o in DIVERSE_OPPONENTS]}), "
           f"seeds/matchup={SEEDS_PER_MATCHUP}, diverse_games/candidate={diverse_games_per_cand}, "
           f"baseline_games/candidate={n_baseline_per_cand} (target {BASELINE_FRACTION:.0%} of signal), "

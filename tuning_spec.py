@@ -51,14 +51,34 @@ SPEC = [
     ("opp_sell_start",                 10,   200,  50,   "int"),
     ("opp_sell_stop",                  500,  719,  705,  "int"),
     ("opp_sell_batch_cap",             1,    30,   8,    "int"),
-    ("opp_sell_base_fraction",         0.1,  0.9,  0.5,  "float"),
-    ("opp_sell_floor_fraction",        0.05, 0.6,  0.15, "float"),
+    # v5: per-item base/floor reserve fractions (was one shared pair) --
+    # inspired by a real public notebook's per-item reserve-fraction sell
+    # mechanism (values there ranged 0.40-0.68 across items, not one shared
+    # constant).
+    ("opp_sell_base_fraction_MILK",       0.1,  0.9,  0.5,  "float"),
+    ("opp_sell_base_fraction_WOOL",       0.1,  0.9,  0.5,  "float"),
+    ("opp_sell_base_fraction_STRAWBERRY", 0.1,  0.9,  0.5,  "float"),
+    ("opp_sell_base_fraction_MELON",      0.1,  0.9,  0.5,  "float"),
+    ("opp_sell_floor_fraction_MILK",       0.05, 0.6,  0.15, "float"),
+    ("opp_sell_floor_fraction_WOOL",       0.05, 0.6,  0.15, "float"),
+    ("opp_sell_floor_fraction_STRAWBERRY", 0.05, 0.6,  0.15, "float"),
+    ("opp_sell_floor_fraction_MELON",      0.05, 0.6,  0.15, "float"),
     ("opp_sell_ramp_start",            400,  719,  600,  "int"),
     ("opp_sell_min_supply_fraction",   0.1,  1.0,  0.5,  "float"),
 
     # -- terminal liquidation --
     ("terminal_soft_start",            650,  719,  706,  "int"),
     ("terminal_hard_start",            660,  719,  708,  "int"),
+
+    # -- v5: shed-capacity overflow guard -- confirmed empirically that our
+    #    own route drives shed occupancy to exactly the engine's 100-item
+    #    hard cap around steps 432-480, identically across seeds. Inspired
+    #    by a real public notebook's proactive room-guard mechanism.
+    ("shed_guard_enabled",             0.0,  1.0,  0.0,   "bool"),
+    ("shed_guard_start",               300,  719,  300,   "int"),
+    ("shed_guard_stop",                300,  719,  719,   "int"),
+    ("shed_guard_threshold",           70,   99,   90,    "int"),
+    ("shed_guard_batch_cap",           1,    30,   20,    "int"),
 
     # -- front-run item priority (order = argsort, highest weight sells first
     #    when multiple items compete for the 10-order market cap) --
@@ -71,6 +91,21 @@ SPEC = [
     ("fr_priority_EGG",                0.0, 10.0,  3.0,  "float"),
     ("fr_priority_CARROT",             0.0, 10.0,  2.0,  "float"),
     ("fr_priority_TOMATO",             0.0, 10.0,  1.0,  "float"),
+
+    # -- v4: whether an item gets front-run AT ALL, not just its priority
+    #    order -- default ON (1.0) for every item so the default vector still
+    #    reproduces the unconditional-front-run behavior every prior version
+    #    used. Lets CMA-ES fully exclude an item (e.g. one whose front-run
+    #    timing never pays off) instead of only being able to deprioritize it.
+    ("fr_enabled_MELON",               0.0,  1.0,  1.0,  "bool"),
+    ("fr_enabled_MILK",                0.0,  1.0,  1.0,  "bool"),
+    ("fr_enabled_STRAWBERRY",          0.0,  1.0,  1.0,  "bool"),
+    ("fr_enabled_WOOL",                0.0,  1.0,  1.0,  "bool"),
+    ("fr_enabled_WHEAT",               0.0,  1.0,  1.0,  "bool"),
+    ("fr_enabled_FERTILIZER",          0.0,  1.0,  1.0,  "bool"),
+    ("fr_enabled_EGG",                 0.0,  1.0,  1.0,  "bool"),
+    ("fr_enabled_CARROT",              0.0,  1.0,  1.0,  "bool"),
+    ("fr_enabled_TOMATO",              0.0,  1.0,  1.0,  "bool"),
 ]
 
 NAMES = [s[0] for s in SPEC]
@@ -109,9 +144,15 @@ def vector_to_params(x):
         "town_demand_multi_shop_bonus": d["town_demand_multi_shop_bonus"],
     }
     overlay_params = {k: v for k, v in d.items()
-                       if k not in base_params and not k.startswith("fr_priority_")}
+                       if k not in base_params
+                       and not k.startswith("fr_priority_")
+                       and not k.startswith("fr_enabled_")}
     priorities = {item: d[f"fr_priority_{item}"] for item in _FR_ITEMS_DEFAULT_ORDER}
-    fr_items_order = tuple(sorted(priorities, key=lambda item: -priorities[item]))
+    enabled = {item: d[f"fr_enabled_{item}"] >= 0.5 for item in _FR_ITEMS_DEFAULT_ORDER}
+    fr_items_order = tuple(
+        item for item in sorted(priorities, key=lambda item: -priorities[item])
+        if enabled[item]
+    )
     return base_params, overlay_params, fr_items_order
 
 

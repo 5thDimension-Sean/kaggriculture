@@ -71,8 +71,17 @@ DEFAULT_PARAMS = {
     "opp_sell_start":           50,
     "opp_sell_stop":            705,
     "opp_sell_batch_cap":       8,
-    "opp_sell_base_fraction":   0.5,
-    "opp_sell_floor_fraction":  0.15,
+    # v5: per-item base/floor reserve fractions (was one shared pair for
+    # all of _OPP_SELL_ITEMS -- a real public notebook uses distinct
+    # per-item reserve fractions as its core sell-timing mechanism).
+    "opp_sell_base_fraction_MILK":       0.5,
+    "opp_sell_base_fraction_WOOL":       0.5,
+    "opp_sell_base_fraction_STRAWBERRY": 0.5,
+    "opp_sell_base_fraction_MELON":      0.5,
+    "opp_sell_floor_fraction_MILK":       0.15,
+    "opp_sell_floor_fraction_WOOL":       0.15,
+    "opp_sell_floor_fraction_STRAWBERRY": 0.15,
+    "opp_sell_floor_fraction_MELON":      0.15,
     "opp_sell_ramp_start":      600,
     "opp_sell_min_supply_fraction": 0.5,
 
@@ -83,6 +92,13 @@ DEFAULT_PARAMS = {
     # sell-slot ranking (impact-score) / demand-urgency weight
     "rank_sell_slots_enabled": 1.0,
     "demand_alpha": 0.25,
+
+    # v5: shed-capacity overflow guard (see the section above shed_guard())
+    "shed_guard_enabled":   0.0,
+    "shed_guard_start":     300,
+    "shed_guard_stop":      719,
+    "shed_guard_threshold": 90,
+    "shed_guard_batch_cap": 20,
 }
 
 # Hand-copied from kaggle_environments/envs/kaggriculture/kaggriculture.py
@@ -751,17 +767,23 @@ def price_floor_guard(obs, action, step):
 _OPP_SELL_ITEMS = ("MILK", "WOOL", "STRAWBERRY", "MELON")
 
 
-def _threshold_fraction(step):
+def _threshold_fraction(step, item):
+    # v5: per-item base/floor (was one global pair for all of _OPP_SELL_ITEMS)
+    # -- a real public notebook ("Structured Economic Policy") uses per-item
+    # reserve fractions ranging 0.40-0.68 across WOOL/MILK/STRAWBERRY/MELON,
+    # not one shared value, as its core sell-timing mechanism.
+    base = _P.get(f"opp_sell_base_fraction_{item}", _P.get("opp_sell_base_fraction", 0.5))
+    floor = _P.get(f"opp_sell_floor_fraction_{item}", _P.get("opp_sell_floor_fraction", 0.15))
     if step <= _P["opp_sell_ramp_start"]:
-        return _P["opp_sell_base_fraction"]
+        return base
     span = max(1, _P["opp_sell_stop"] - _P["opp_sell_ramp_start"])
     t = min(1.0, (step - _P["opp_sell_ramp_start"]) / span)
-    return _P["opp_sell_base_fraction"] + t * (_P["opp_sell_floor_fraction"] - _P["opp_sell_base_fraction"])
+    return base + t * (floor - base)
 
 
 def _reserve_price(obs, item, step):
     base = float(_MARKET_PARAMS[item]["base"])
-    fraction = _threshold_fraction(step)
+    fraction = _threshold_fraction(step, item)
     supply_scale = _opponent_supply_scale(obs, item)
     supply_discount = min(1.0, 1.0 / max(1.0, supply_scale))
     supply_discount = max(_P["opp_sell_min_supply_fraction"], supply_discount)
@@ -793,6 +815,62 @@ def opportunistic_sell(obs, action, step):
         if surplus <= 0:
             continue
         market.append(["SELL", item, min(surplus, int(_P["opp_sell_batch_cap"]))])
+    action["market"] = market[:10]
+    return action
+
+
+# ===========================================================================
+# v5: shed-capacity overflow guard.
+#
+# Confirmed empirically (2026-08-23) that our OWN route genuinely drives
+# shed occupancy to exactly the engine's 100-item hard cap around steps
+# 432-480, identically across every seed tested -- a route-timing artifact,
+# not opponent-dependent. The real engine (and _projected_shed's own model
+# of it) silently caps DROP/PLACE deposits at 100 -- anything over that is
+# lost production, not queued. Inspired by a real public notebook's
+# "_v17_room_guard" mechanism: force extra sells of already-owned surplus,
+# priority-ordered, whenever projected occupancy would breach a tunable
+# threshold below the hard cap. Purely defensive (never adds a NEW sell
+# source beyond items already in the shed) -- default OFF like every other
+# new overlay in this project's history.
+# ===========================================================================
+
+# Cheapest/least-schedule-critical items first -- when forced to make room,
+# prefer dumping WHEAT/FERTILIZER surplus over premium goods already
+# earmarked for their normal scheduled sells. Broader than _OPP_SELL_ITEMS
+# since WHEAT/FERTILIZER genuinely accumulate in our shed too.
+_SHED_GUARD_ITEMS = ("WHEAT", "FERTILIZER", "CARROT", "TOMATO", "EGG", "MILK", "WOOL", "STRAWBERRY", "MELON")
+
+
+def shed_guard(obs, action, step):
+    if not _P["shed_guard_enabled"] or not (_P["shed_guard_start"] <= step <= _P["shed_guard_stop"]):
+        return action
+    projected = _projected_shed(obs, action)
+    total = sum(projected.values())
+    threshold = _P["shed_guard_threshold"]
+    if total < threshold:
+        return action
+    action = _copy_action(action)
+    market = list(action.get("market") or [])
+    if len(market) >= 10:
+        return action
+    planned_sells = {}
+    for order in market:
+        if _is_sell(order):
+            planned_sells[str(order[1])] = planned_sells.get(str(order[1]), 0) + max(0, int(order[2]))
+    excess = total - threshold
+    for item in _SHED_GUARD_ITEMS:
+        if excess <= 0 or len(market) >= 10:
+            break
+        available = max(0, int(projected.get(item, 0) or 0) - planned_sells.get(item, 0))
+        if available <= 0:
+            continue
+        qty = min(available, excess, int(_P["shed_guard_batch_cap"]))
+        if qty <= 0:
+            continue
+        market.append(["SELL", item, qty])
+        planned_sells[item] = planned_sells.get(item, 0) + qty
+        excess -= qty
     action["market"] = market[:10]
     return action
 

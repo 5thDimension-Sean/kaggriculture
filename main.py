@@ -464,6 +464,7 @@ def agent(obs):
         action = overlays.premium_shift(obs, action, step, _ACTIONS)
         action = overlays.fertilizer_relay(obs, action, step, _ACTIONS)
         action = overlays.opportunistic_sell(obs, action, step)
+        action = overlays.shed_guard(obs, action, step)
         action = overlays.terminal_liquidation(obs, action, step)
         return _align_hands(action, obs)
     except Exception:
