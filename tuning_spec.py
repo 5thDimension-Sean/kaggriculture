@@ -29,6 +29,13 @@ overlay_params so overlays.py itself needs no change.
 
 SHED_CAPACITY = 100  # engine's real shed-item hard cap (kaggle_environments default; see overlays.py's shed_guard docstring)
 
+# Single source of truth for evolve.py's default checkpoint path -- lives
+# here (not in evolve.py) so build_agent.py can reference the SAME name
+# without importing evolve.py itself (that import triggers evolve.py's
+# module-level opponent-pool construction, see remap_checkpoint_vector()'s
+# docstring for why build_agent.py deliberately avoids it).
+CHECKPOINT_PATH_DEFAULT = "evolve_checkpoint_v6.json"
+
 SPEC = [
     # -- main.py's own knobs --
     ("weed_replay_steps",              2,    16,   8,    "int"),
@@ -180,6 +187,53 @@ def vector_to_params(x):
 
 def default_vector():
     return list(DEFAULTS)
+
+
+def remap_checkpoint_vector(old_names, old_values, warn=True):
+    """Rebuild a full-length, CURRENT-NAMES-ordered params vector from an
+    older checkpoint's (param_names, best_params) pair. Needed because NAMES
+    can change shape/order/meaning across versions (v6 renamed
+    shed_guard_threshold -> shed_guard_overflow_buffer; v4 added
+    fr_enabled_* gates; v5 split opp_sell_*_fraction into per-item names) --
+    blindly reusing an old vector POSITIONALLY would silently misinterpret
+    values under the new semantics. Matching names carry over directly; the
+    one known rename is inverse-transformed explicitly; anything else
+    missing falls back to the current default -- which can silently produce
+    a candidate that's part old-checkpoint, part current-defaults, so by
+    default (`warn=True`) this prints a one-line summary whenever that
+    happens rather than doing it invisibly. Lives here (not in evolve.py)
+    so build_agent.py -- which only needs to materialize a candidate file --
+    doesn't have to import the optimizer module to do it (that import used
+    to trigger evolve.py's module-level opponent-pool construction as a
+    side effect of just building a submission file).
+
+    Returns (vector, report): report is {'preserved', 'renamed', 'defaulted'}
+    -- each a list of names -- for a caller that wants to inspect or print
+    it in more detail than the default one-line warning."""
+    old = dict(zip(old_names, old_values))
+    defaults = default_vector()
+    out = []
+    preserved, renamed, defaulted = [], [], []
+    for name, default in zip(NAMES, defaults):
+        if name in old:
+            out.append(old[name])
+            preserved.append(name)
+        elif name == "shed_guard_overflow_buffer" and "shed_guard_threshold" in old:
+            out.append(SHED_CAPACITY - old["shed_guard_threshold"])
+            renamed.append(name)
+        else:
+            out.append(default)
+            defaulted.append(name)
+    report = {"preserved": preserved, "renamed": renamed, "defaulted": defaulted}
+    if warn and (renamed or defaulted):
+        print(f"REMAPPING CHECKPOINT: preserved={len(preserved)} renamed={len(renamed)} "
+              f"defaulted={len(defaulted)}")
+        if renamed:
+            print(f"  renamed (value transformed, not copied positionally): {renamed}")
+        if defaulted:
+            print(f"  WARNING: {len(defaulted)} current parameter(s) absent from the checkpoint "
+                  f"-- falling back to current defaults: {defaulted}")
+    return out, report
 
 
 def initial_std():

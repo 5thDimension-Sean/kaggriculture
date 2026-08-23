@@ -1,0 +1,2037 @@
+Kaggriculture V6 → V7
+COMPREHENSIVE IMPROVEMENTS
+
+============================================================
+1. EXECUTIVE SUMMARY
+============================================================
+
+V6 is a major improvement over the earlier generations, especially in
+experimental methodology and software correctness.
+
+The biggest achievement of V6 is not simply obtaining a higher optimization
+score. It is making the optimization process much more capable of separating
+real policy improvements from noise, seed bias, candidate contamination,
+overfitting, and evaluation mistakes.
+
+V6 now has:
+
+- common random-number evaluation
+- deterministic seed selection
+- fresh-seed verification
+- baseline regression checks
+- separate promotion benchmarking
+- successive-halving evaluation
+- finalist-only optimization records
+- IPOP restarts
+- staged parameter optimization
+- parameter sensitivity analysis
+- parameter diversity diagnostics
+- deterministic opponent selection
+- checkpoint/resume support
+- checkpoint parameter remapping
+- isolated candidate construction
+- self-contained candidate generation
+- multiprocessing
+- optimized game execution
+- diverse opponent replay evaluation
+- terminal-score tracking
+- trend-score tracking
+
+However, V6 should NOT yet be considered definitively proven to be the
+strongest Kaggriculture agent.
+
+The next objective is:
+
+1. Prove that V6's best candidate generalizes to large unseen seed sets.
+2. Improve the actual game-playing policy instead of endlessly increasing
+   optimizer complexity.
+
+The central principle for V7 is:
+
+    DO NOT OPTIMIZE THE MEASUREMENT SYSTEM INSTEAD OF THE AGENT.
+
+
+============================================================
+2. CURRENT ASSESSMENT
+============================================================
+
+Engineering / experimental methodology:
+    ~9/10
+
+Actual agent/policy:
+    ~7–8/10
+
+Evidence that V6 is genuinely stronger than main.py:
+    ~6/10
+
+The experimental framework is currently more mature than the evidence proving
+that the resulting policy is superior.
+
+That is not a criticism of the engineering. It is the correct next problem to
+solve.
+
+
+============================================================
+3. CANDIDATE ISOLATION — CRITICAL
+============================================================
+
+Earlier versions had a serious candidate-isolation problem.
+
+Normal Python imports can cause modules to be cached in sys.modules. If those
+modules contain mutable state, supposedly independent candidates can influence
+each other.
+
+This is especially dangerous when main.py and overlays.py contain state that
+depends on the current opponent/seat.
+
+The problem was demonstrated by comparing the old in-process candidate path
+against the isolated path using the same parameters and seed. The actions
+diverged.
+
+The root problem involved mutable opponent-classification state leaking between
+candidate and opponent modules.
+
+Therefore:
+
+    Historical results from contaminated versions must NOT be treated as
+    perfectly clean scientific evidence.
+
+The candidate builder must continue to use fresh isolated modules.
+
+Required architecture:
+
+    main.py
+        +
+    overlays.py
+        +
+    candidate configuration
+            |
+            v
+    fresh module
+            |
+            v
+    fresh mutable state
+            |
+            v
+    candidate agent
+
+Never reintroduce shared candidate module state.
+
+
+============================================================
+4. ONE CONFIGURATION SOURCE OF TRUTH
+============================================================
+
+Candidate configuration must be resolved through one function/path.
+
+The same parameter-resolution primitive must be used for:
+
+    A. in-process evaluation
+    B. standalone candidate materialization
+
+This prevents the extremely dangerous situation where:
+
+    CMA-ES evaluates candidate A
+
+but:
+
+    build_agent.py writes candidate B
+
+Both paths must resolve:
+
+    base_params
+    overlay_params
+    fr_order
+
+from the exact same parameter vector and exact same configuration logic.
+
+
+============================================================
+5. DEFAULT VECTOR REGRESSION
+============================================================
+
+The default tuning vector is intended to reproduce main.py's baseline
+behavior.
+
+That should remain a hard regression test.
+
+Required invariant:
+
+    default_vector()
+            ≈
+    main.py baseline
+
+This should be checked with actual games, not merely by comparing dictionaries
+or parameter values.
+
+If this invariant breaks, optimization results become much harder to interpret.
+
+
+============================================================
+6. COMMON RANDOM NUMBERS
+============================================================
+
+This is one of the most important V6 improvements.
+
+Candidates must receive the same game seeds when being compared.
+
+Bad:
+
+    Candidate A -> seed 100
+    Candidate B -> seed 827
+
+Good:
+
+    seed 100
+       |
+       +-- Candidate A
+       +-- Candidate B
+       +-- Candidate C
+       +-- Candidate D
+
+This makes candidate differences much more attributable to the policy rather
+than environmental randomness.
+
+Common random-number evaluation should remain mandatory for candidate
+comparisons.
+
+
+============================================================
+7. DETERMINISTIC SEED GENERATION
+============================================================
+
+Seed selection must be derived from explicit identifiers such as:
+
+    master seed
+    generation
+    stage
+    batch
+    restart
+
+Do not rely on one continuously mutated RNG stream for important experimental
+decisions.
+
+A mutable RNG stream can make:
+
+    uninterrupted run
+
+and:
+
+    resumed run
+
+select different opponents/seeds for the same generation.
+
+Generation-specific deterministic seed derivation avoids this problem.
+
+This is especially important for scientific reproducibility.
+
+
+============================================================
+8. THREE-LEVEL EVALUATION
+============================================================
+
+V6's separation between optimization, verification, and promotion should be
+preserved.
+
+LEVEL A — OPTIMIZATION
+
+Purpose:
+
+    Search broadly and cheaply.
+
+This is noisy and should be treated as candidate discovery.
+
+A Level-A score must NOT automatically mean the candidate is good enough to
+submit.
+
+
+LEVEL B — VERIFICATION
+
+Purpose:
+
+    Re-evaluate promising candidates on fresh, disjoint seeds.
+
+This determines whether an optimization result survives outside the exact
+games that generated it.
+
+
+LEVEL C — PROMOTION
+
+Purpose:
+
+    Run the candidate against the baseline on a substantial fresh benchmark.
+
+Only this stage should determine whether a candidate deserves to replace the
+production baseline.
+
+
+============================================================
+9. SUCCESSIVE HALVING
+============================================================
+
+Successive halving is a good way to allocate simulation budget.
+
+The general structure should remain:
+
+    many candidates
+          |
+          v
+    cheap screening
+          |
+          v
+    fewer survivors
+          |
+          v
+    more expensive evaluation
+          |
+          v
+    finalists
+          |
+          v
+    full evaluation + verification
+
+However, every candidate comparison must use comparable fitness definitions.
+
+A candidate that only received diverse-opponent evaluation must not be compared
+as though it had also received baseline evaluation.
+
+V6 already discovered this exact class of problem during its own smoke testing.
+
+Future changes must preserve the rule:
+
+    GEN_BEST MUST COME FROM FINALISTS THAT WERE EVALUATED ON THE FULL
+    COMPARABLE OBJECTIVE.
+
+
+============================================================
+10. 60-DIMENSIONAL SEARCH
+============================================================
+
+A very large parameter space is one of the biggest remaining optimization
+concerns.
+
+If the search contains approximately 60 dimensions, CMA-ES must learn useful
+directions in a very large space.
+
+That is possible, but expensive.
+
+Many dimensions may be:
+
+- weakly influential
+- redundant
+- inactive most of the game
+- highly correlated
+- conditional
+- discontinuous
+- relevant only during one game phase
+
+Therefore, treating every parameter equally is inefficient.
+
+V7 should use sensitivity analysis to classify parameters.
+
+
+TIER 1 — HIGH SENSITIVITY
+
+Strong impact on performance.
+
+Action:
+
+    Continue actively optimizing.
+
+
+TIER 2 — MEDIUM SENSITIVITY
+
+Meaningful but not dominant.
+
+Action:
+
+    Narrow ranges and/or lower optimization priority.
+
+
+TIER 3 — LOW SENSITIVITY
+
+Little measurable effect.
+
+Action:
+
+    Freeze unless new evidence appears.
+
+
+TIER 4 — INTERACTION-SENSITIVE
+
+Effect depends heavily on other parameters.
+
+Action:
+
+    Study interactions before blindly optimizing.
+
+
+The goal should be to reduce the effective search dimension rather than simply
+giving CMA-ES more generations.
+
+
+============================================================
+11. FITNESS FUNCTION
+============================================================
+
+The current fitness design is sophisticated, but that creates a risk.
+
+V6 uses concepts including:
+
+- mean performance
+- variance
+- baseline performance
+- regression penalties
+- additional regression penalties
+- trend checkpoints
+
+This can become a problem if the optimizer becomes extremely good at
+optimizing the proxy while becoming worse at the actual game objective.
+
+The key question is:
+
+    Does optimization fitness strongly predict actual terminal performance?
+
+This must be measured.
+
+For a large population of candidates, calculate:
+
+    optimization fitness
+    terminal mean
+    terminal median
+    win rate
+    independent benchmark result
+
+Then measure their correlation.
+
+If high optimization fitness does not reliably predict high terminal performance,
+the fitness function is misaligned.
+
+Do NOT respond by blindly adding more penalties.
+
+First identify why the objective is misaligned.
+
+
+============================================================
+12. TREND SCORE VS TERMINAL SCORE
+============================================================
+
+V6 correctly records both trend and terminal performance.
+
+That is good.
+
+However:
+
+    trend performance
+
+and:
+
+    terminal performance
+
+are not necessarily the same objective.
+
+A policy that gets ahead early may have a very different strategic value from a
+policy that sacrifices early performance for a much stronger final position.
+
+Therefore, terminal performance must remain visible at all times.
+
+Do not silently replace terminal performance with trend performance.
+
+A recommended diagnostic table is:
+
+    candidate
+    trend_mean
+    terminal_mean
+    trend_std
+    terminal_std
+    baseline_mean
+    baseline_win_rate
+
+Then determine whether trend is actually predictive of the competition
+objective.
+
+
+============================================================
+13. BASELINE PENALTY
+============================================================
+
+Protecting against regression relative to main.py is useful.
+
+However, baseline protection can become baseline anchoring.
+
+There is a major difference between:
+
+    prevent catastrophic regression
+
+and:
+
+    remain close to main.py
+
+The first is good.
+
+The second can prevent genuine breakthroughs.
+
+The baseline should remain an important benchmark, but the optimizer should be
+allowed to discover strategies that are substantially different from main.py if
+they consistently perform better.
+
+Recommended approach:
+
+    use baseline as a safety constraint/benchmark
+
+rather than allowing it to dominate the entire optimization objective.
+
+
+============================================================
+14. ADAPTIVE OPPONENT SELECTION
+============================================================
+
+Adaptive opponent selection is conceptually strong.
+
+Opponents that better discriminate between candidates can receive more
+evaluation budget.
+
+However, this creates a feedback loop:
+
+    candidates
+        |
+        v
+    opponent informativeness
+        |
+        v
+    opponent selection
+        |
+        v
+    new candidate population
+        |
+        v
+    new informativeness
+
+This makes the effective training distribution nonstationary.
+
+That can increase noise and make long-term comparisons harder.
+
+Recommended design:
+
+    70% adaptive opponents
+    30% fixed canonical opponents
+
+The exact ratio should be experimentally tested.
+
+The important point is that a stable evaluation ruler must always exist.
+
+Adaptive selection should NEVER completely replace fixed opponents.
+
+
+============================================================
+15. OPPONENT MODELING
+============================================================
+
+This is one of the largest potential policy-level improvements.
+
+Instead of merely reacting to observed opponent actions, the agent should
+maintain explicit beliefs about the opponent.
+
+Potential state variables:
+
+    opponent aggression
+    opponent resource pressure
+    opponent buying behavior
+    opponent selling behavior
+    opponent risk tolerance
+    opponent crop preferences
+    opponent liquidity
+    opponent expansion strategy
+
+These estimates should update throughout the game.
+
+The goal is to move from:
+
+    "What did the opponent just do?"
+
+toward:
+
+    "What is this opponent likely to do next?"
+
+
+============================================================
+16. COUNTERFACTUAL ACTION EVALUATION
+============================================================
+
+The next major policy improvement should move away from purely threshold-driven
+decisions.
+
+Instead of:
+
+    if condition:
+        BUY
+    elif condition:
+        SELL
+    else:
+        HOLD
+
+the agent should conceptually evaluate:
+
+    BUY
+    SELL
+    HOLD
+    UPGRADE
+    HARVEST
+    other legal actions
+
+and estimate:
+
+    expected value
+    downside
+    future flexibility
+    resource impact
+    opponent response
+    terminal impact
+
+Then choose the action with the strongest expected strategic value.
+
+This is potentially much more powerful than adding another group of
+hand-tuned thresholds.
+
+
+============================================================
+17. GAME-PHASE AWARENESS
+============================================================
+
+The game should not necessarily be treated as one stationary decision problem.
+
+A useful conceptual structure is:
+
+
+EARLY GAME
+
+Priorities:
+
+    growth
+    positioning
+    resource acquisition
+    long-term setup
+
+
+MID GAME
+
+Priorities:
+
+    resource conversion
+    competition
+    optimization
+    opponent adaptation
+
+
+LATE GAME
+
+Priorities:
+
+    liquidation
+    terminal value
+    risk reduction
+    maximizing final score
+
+V6's checkpoint-based evaluation already partially recognizes that different
+parts of the game matter differently.
+
+The actual policy should eventually become explicitly phase-aware.
+
+
+============================================================
+18. STAGED OPTIMIZATION
+============================================================
+
+Staged optimization can reduce the difficulty of the search.
+
+However, it introduces a possible problem.
+
+Suppose:
+
+    Stage A finds its local optimum.
+
+Then:
+
+    Stage B optimizes around that result.
+
+The global optimum may require Stage A to temporarily move away from its local
+optimum so that Stage B can find a much better combination.
+
+Therefore staged optimization must NOT automatically be assumed to be better
+than joint optimization.
+
+Run controlled experiments:
+
+    Joint optimization
+        VS
+    Staged optimization
+
+using:
+
+    same master seed
+    same candidate budget
+    same verification budget
+    same benchmark
+
+Choose based on independent performance, not intuition.
+
+
+============================================================
+19. PARAMETER INTERACTIONS
+============================================================
+
+Sensitivity analysis using one-at-a-time perturbations is useful but
+insufficient.
+
+Two parameters can individually appear weak while their combination is
+extremely important.
+
+V7 should therefore eventually measure pairwise or group interactions.
+
+For example:
+
+    parameter A alone -> +2
+    parameter B alone -> +1
+    A + B -> +150
+
+That means independent sensitivity analysis would badly underestimate their
+importance.
+
+Prioritize interaction testing among the highest-impact parameters.
+
+
+============================================================
+20. CMA-ES RESTARTS
+============================================================
+
+IPOP restarts are reasonable for escaping local optima.
+
+However, restarts should be judged by return on simulation budget.
+
+Track:
+
+    restart number
+    population size
+    sigma
+    best score before restart
+    best score after restart
+    games consumed
+    improvement
+    improvement per game
+
+If later restarts consistently produce negligible improvements, stop spending
+large amounts of compute on them.
+
+A restart should exist to escape stagnation, not simply to keep searching
+forever.
+
+
+============================================================
+21. REPRODUCIBLE CHECKPOINTS
+============================================================
+
+Checkpointing should preserve:
+
+    generation
+    restart count
+    best optimization parameters
+    best verified parameters
+    fitness history
+    baseline results
+    opponent statistics
+    parameter names
+    parameter groups
+    seed configuration
+    optimizer state
+    sigma/population information
+
+When parameter definitions change, checkpoint vectors must be remapped
+explicitly.
+
+Never silently assume that dimension N in an old checkpoint still represents
+the same parameter in a new tuning specification.
+
+
+============================================================
+22. STAGED VECTOR EXPANSION
+============================================================
+
+If staged optimization uses only a subset of parameters, CMA-ES must still be
+given the correctly expanded full vector when converting back into the complete
+parameter configuration.
+
+A previous bug involved the optimizer returning only the reduced active vector,
+while downstream code expected the full vector.
+
+This caused frozen dimensions to disappear and could trigger parameter lookup
+errors.
+
+Required invariant:
+
+    optimizer active vector
+            |
+            v
+    full parameter vector
+            |
+            v
+    vector_to_params()
+
+The expansion operation must be tested independently.
+
+
+============================================================
+23. FINALIST-ONLY PROMOTION
+============================================================
+
+A candidate that was eliminated during screening should never become the
+generation's official best candidate if it was not evaluated on the complete
+fitness objective.
+
+This was discovered empirically during V6 testing.
+
+An eliminated candidate could have a high diverse-only score but no baseline
+score, causing it to appear better than a fully evaluated finalist.
+
+The fix is conceptually simple:
+
+    gen_best = max(finalists)
+
+NOT:
+
+    gen_best = max(all candidates)
+
+This must remain a hard invariant.
+
+
+============================================================
+24. VERIFICATION MUST BE FRESH
+============================================================
+
+When a candidate achieves a new optimization record, it should be re-evaluated
+on seeds that were not used to produce that record.
+
+The verification stage should answer:
+
+    "Does this candidate still look good when the optimizer is no longer
+     allowed to benefit from the exact games it optimized against?"
+
+If the optimization score is dramatically higher than verification, report:
+
+    POSSIBLE_OVERFIT
+
+Do not quietly promote the candidate.
+
+
+============================================================
+25. PROMOTION BENCHMARK
+============================================================
+
+The promotion benchmark is the actual gate for replacing main.py.
+
+The benchmark should be significantly larger than the quick optimization
+evaluation.
+
+The candidate should be evaluated against main.py using fresh seeds.
+
+At minimum record:
+
+    mean terminal delta
+    median terminal delta
+    standard deviation
+    win rate
+    loss rate
+    tie rate
+    worst game
+    best game
+    5th percentile
+    1st percentile
+    trend delta
+
+The current promotion command uses a relatively small quick benchmark.
+That is useful for smoke testing, but it should not be treated as final proof
+of superiority.
+
+
+============================================================
+26. REQUIRED LARGE-SCALE GENERALIZATION TEST
+============================================================
+
+This is the highest-priority experiment.
+
+Take:
+
+    best verified V6 candidate
+
+and:
+
+    main.py
+
+Then run several completely independent seed sets.
+
+Recommended initial experiment:
+
+    Benchmark A: 500 games
+    Benchmark B: 500 games
+    Benchmark C: 500 games
+    Benchmark D: 500 games
+
+Each benchmark should use independent seeds.
+
+Example output:
+
+    Benchmark A: +180
+    Benchmark B: +160
+    Benchmark C: +195
+    Benchmark D: +170
+
+This would be strong evidence of a real improvement.
+
+Conversely:
+
+    A: +200
+    B: -120
+    C: +80
+    D: -40
+
+would indicate substantial instability or overfitting.
+
+
+============================================================
+27. HOW TO INTERPRET GENERALIZATION
+============================================================
+
+CASE A — LARGE CONSISTENT IMPROVEMENT
+
+If the candidate consistently wins across independent benchmarks:
+
+    The policy is genuinely better.
+
+Next priority:
+
+    policy innovation.
+
+
+CASE B — SMALL CONSISTENT IMPROVEMENT
+
+If the candidate wins consistently but by a small amount:
+
+    The optimization is probably working.
+
+However:
+
+    the current policy architecture may be approaching its ceiling.
+
+
+CASE C — MIXED RESULTS
+
+If some seed sets win and others lose:
+
+    investigate variance
+    investigate opponent dependence
+    investigate policy instability
+    investigate overfitting
+
+
+CASE D — OPTIMIZATION IMPROVES BUT BENCHMARK GETS WORSE
+
+This means:
+
+    the fitness function and/or optimization distribution is misaligned.
+
+Do NOT immediately add more penalties.
+
+Find the underlying cause.
+
+
+============================================================
+28. MULTI-SEED REPLICATION
+============================================================
+
+A single impressive benchmark is not sufficient.
+
+The strongest candidate should survive:
+
+    multiple seed sets
+    multiple opponent mixes
+    multiple evaluation batches
+
+A candidate that wins once is interesting.
+
+A candidate that wins repeatedly is evidence.
+
+
+============================================================
+29. POLICY VS OPTIMIZER DIAGNOSIS
+============================================================
+
+When performance plateaus, determine which problem exists.
+
+PROBLEM A:
+
+    Search cannot find good parameters.
+
+Possible solutions:
+
+    reduce dimensions
+    improve parameter bounds
+    change sigma
+    change population size
+    improve restart policy
+    improve seed allocation
+
+
+PROBLEM B:
+
+    The policy itself cannot become better through parameter tuning.
+
+Possible solutions:
+
+    opponent modeling
+    counterfactual reasoning
+    phase awareness
+    strategic planning
+    improved market intelligence
+    improved resource valuation
+
+Do not automatically respond to a policy ceiling by making CMA-ES more complex.
+
+
+============================================================
+30. FAST DEEPCOPY OPTIMIZATION
+============================================================
+
+The worker-side deepcopy optimization is a legitimate engineering
+improvement.
+
+Profiling showed that the Kaggle environment engine spent a large amount of
+time inside deepcopy operations.
+
+The custom worker-only deepcopy implementation was tested against real games
+and produced byte-identical outcomes while reducing runtime.
+
+This optimization is acceptable because:
+
+    it is only applied inside evolution workers
+    it does not modify the submitted agent
+    game outcomes were checked for equivalence
+
+However, this optimization should continue to be regression-tested whenever
+the Kaggle environment changes.
+
+Correctness is more important than speed.
+
+
+============================================================
+31. CACHING
+============================================================
+
+Candidate agents should be cached carefully inside workers.
+
+Caching is useful because repeatedly rebuilding the same candidate is expensive.
+
+However:
+
+    cache key
+    candidate parameters
+    mutable state
+
+must remain correctly separated.
+
+Never allow game state from one simulation to leak into another simulation.
+
+The safest model is:
+
+    cached immutable candidate construction
+    fresh game environment every match
+
+
+============================================================
+32. MULTIPROCESSING
+============================================================
+
+Multiprocessing is useful because game simulations are expensive.
+
+However, multiprocessing increases the complexity of:
+
+    random state
+    module state
+    caches
+    opponent loading
+    checkpoint behavior
+
+Therefore, worker initialization should remain deterministic and explicit.
+
+Each worker should independently load:
+
+    benchmark
+    build_agent
+    opponents
+    baseline
+    candidate cache
+
+and should not inherit unsafe mutable candidate state.
+
+
+============================================================
+33. FIXED CANONICAL TEST SUITE
+============================================================
+
+Create a permanent canonical evaluation suite.
+
+It should never be used for training.
+
+Its only purpose should be regression detection.
+
+Every major code change should run against this suite.
+
+The suite should contain:
+
+    normal seeds
+    difficult seeds
+    unusual market conditions
+    different opponent styles
+    early-game stress cases
+    late-game stress cases
+
+The score should be tracked across every agent version.
+
+
+============================================================
+34. ADVERSARIAL TESTING
+============================================================
+
+Do not only test the agent against opponents it already handles well.
+
+Construct or collect difficult opponent behaviors such as:
+
+    aggressive expansion
+    extreme selling
+    conservative play
+    unusual resource allocation
+    early pressure
+    late-game optimization
+
+The goal is to determine:
+
+    where does the policy actually break?
+
+
+============================================================
+35. FAILURE-CASE ANALYSIS
+============================================================
+
+Do not only inspect the mean score.
+
+Every promotion benchmark should identify:
+
+    worst 10 games
+    best 10 games
+
+For the worst games, inspect:
+
+    actions
+    resources
+    market state
+    opponent actions
+    policy state
+    parameter values
+    game phase
+
+The goal is to determine whether losses come from:
+
+    bad luck
+    bad valuation
+    opponent prediction failure
+    timing failure
+    resource management
+    endgame mistakes
+    exploration mistakes
+
+
+============================================================
+36. ACTION-LEVEL LOGGING
+============================================================
+
+For selected diagnostic games, log:
+
+    timestep
+    game phase
+    money
+    inventory
+    crop state
+    market state
+    opponent state estimate
+    chosen action
+    action score
+    alternative action scores
+    reason for decision
+
+This should not necessarily be enabled for every optimization game because of
+performance cost.
+
+Use it for representative and failure-case games.
+
+
+============================================================
+37. OPPONENT PREDICTION
+============================================================
+
+A stronger agent should estimate opponent behavior.
+
+Possible predictions:
+
+    probability opponent buys
+    probability opponent sells
+    probability opponent expands
+    probability opponent holds
+    expected resource demand
+    expected market pressure
+
+Then update the model after each observed action.
+
+This transforms opponent handling from reactive logic into predictive logic.
+
+
+============================================================
+38. COUNTERFACTUAL PLANNING
+============================================================
+
+For important decisions, estimate:
+
+    What happens if I buy?
+
+    What happens if I sell?
+
+    What happens if I hold?
+
+    What happens if I invest?
+
+    What happens if I sacrifice short-term score for future value?
+
+The agent does not necessarily need a full game simulator for every action.
+
+Even a lightweight approximate value model could be a substantial improvement
+over static thresholds.
+
+
+============================================================
+39. FUTURE FLEXIBILITY AS A VALUE
+============================================================
+
+A decision should not only be evaluated by immediate money.
+
+Consider:
+
+    immediate gain
+    expected future gain
+    liquidity
+    risk
+    flexibility
+    opportunity cost
+    opponent response
+
+A resource that enables many future actions can be worth more than a resource
+that produces a slightly larger immediate score.
+
+
+============================================================
+40. GAME-PHASE POLICY
+============================================================
+
+Implement explicit game-phase awareness.
+
+Possible state:
+
+    EARLY
+    MID
+    LATE
+
+Potentially determine phase using:
+
+    timestep
+    remaining turns
+    resource levels
+    market state
+    opponent state
+    distance from terminal scoring
+
+Each phase can use different decision weights.
+
+This is likely more meaningful than adding dozens of independent global
+parameters.
+
+
+============================================================
+41. REDUCE GLOBAL THRESHOLDS
+============================================================
+
+If the current policy relies heavily on many global thresholds, investigate
+whether those thresholds can be replaced by relative/derived quantities.
+
+Instead of:
+
+    if money > X
+
+consider:
+
+    money relative to expected opportunity cost
+
+Instead of:
+
+    if price > Y
+
+consider:
+
+    price relative to expected future price
+
+Instead of:
+
+    if opponent_resource > Z
+
+consider:
+
+    opponent_resource relative to our own strategic position
+
+Derived features generally generalize better than arbitrary absolute constants.
+
+
+============================================================
+42. PARAMETER NORMALIZATION
+============================================================
+
+All tunable parameters should have clearly defined:
+
+    lower bound
+    upper bound
+    default
+    semantic meaning
+    unit
+    expected effect
+    sensitivity
+    group
+
+Do not allow parameters whose ranges are arbitrary without explanation.
+
+For every parameter, document:
+
+    "What behavior does this parameter control?"
+
+
+============================================================
+43. PARAMETER DEAD-ZONE DETECTION
+============================================================
+
+Detect parameters for which:
+
+    10% perturbation
+    25% perturbation
+    50% perturbation
+
+produce effectively no change.
+
+These parameters should likely be frozen.
+
+This reduces dimensionality and makes CMA-ES more efficient.
+
+
+============================================================
+44. PARAMETER COLLISION DETECTION
+============================================================
+
+Detect parameters that effectively control the same behavior.
+
+For example:
+
+    parameter A controls buying aggressiveness
+    parameter B also controls buying aggressiveness
+
+If two parameters are highly correlated, the optimizer may waste dimensions
+moving them against each other.
+
+Merge or redesign redundant controls where possible.
+
+
+============================================================
+45. PARAMETER INTERACTION MATRIX
+============================================================
+
+Eventually create a matrix showing:
+
+    parameter A × parameter B
+
+and the resulting performance interaction.
+
+Focus on interactions among the highest-sensitivity parameters first.
+
+This will identify hidden combinations that one-dimensional sensitivity testing
+cannot discover.
+
+
+============================================================
+46. STAGED VS JOINT SEARCH EXPERIMENT
+============================================================
+
+Run a controlled comparison:
+
+    Experiment A:
+        joint optimization
+
+    Experiment B:
+        staged optimization
+
+Use identical:
+
+    seeds
+    total game budget
+    verification budget
+    baseline benchmark
+
+Compare only the independent benchmark results.
+
+Do not choose based on which optimization curve looks prettier.
+
+
+============================================================
+47. IPOP RESTART EFFICIENCY
+============================================================
+
+Track improvement per simulation.
+
+For each restart:
+
+    improvement / games
+
+If:
+
+    restart 1 -> huge gain
+    restart 2 -> moderate gain
+    restart 3 -> tiny gain
+    restart 4 -> zero gain
+
+then additional restarts are probably not the best use of compute.
+
+The optimizer should eventually stop searching and allow policy development to
+take over.
+
+
+============================================================
+48. FITNESS CORRELATION STUDY
+============================================================
+
+Create a large candidate dataset containing:
+
+    optimization fitness
+    terminal score
+    verification score
+    promotion score
+
+Then calculate:
+
+    Pearson correlation
+    Spearman correlation
+    rank stability
+
+The key question is:
+
+    Does ranking candidates by optimization fitness correctly rank them by
+    actual independent performance?
+
+If not, the optimization objective is inadequate.
+
+
+============================================================
+49. RANK STABILITY
+============================================================
+
+Do not only ask whether Candidate A beats Candidate B once.
+
+Evaluate the same candidates across multiple seed batches.
+
+If:
+
+    A > B
+    A < B
+    A > B
+    A < B
+
+then their ranking is unstable.
+
+If:
+
+    A > B
+    A > B
+    A > B
+    A > B
+
+then the ranking is meaningful.
+
+This is particularly important when score differences are small relative to
+game variance.
+
+
+============================================================
+50. CONFIDENCE INTERVALS
+============================================================
+
+For large benchmarks, report uncertainty.
+
+At minimum track:
+
+    mean
+    standard deviation
+    standard error
+    confidence interval
+
+Do not treat:
+
+    +10
+
+as automatically meaningful if:
+
+    standard deviation = 500
+
+
+============================================================
+51. WIN RATE IS NOT ENOUGH
+============================================================
+
+A candidate can have a high win rate but still perform badly in total score.
+
+Likewise, a candidate can have a lower win rate while achieving larger wins.
+
+Therefore always report:
+
+    terminal delta
+    win rate
+    median delta
+    tail losses
+
+Do not promote solely because:
+
+    win_rate >= 50%
+
+
+============================================================
+52. WORST-CASE ROBUSTNESS
+============================================================
+
+A strong competition agent should not only maximize mean performance.
+
+Track:
+
+    worst game
+    1st percentile
+    5th percentile
+    lower confidence bound
+
+A policy that wins spectacularly but occasionally catastrophically may be worse
+than a slightly less aggressive policy with much better downside protection.
+
+
+============================================================
+53. PROMOTION RULE
+============================================================
+
+The promotion rule should require:
+
+    strong mean improvement
+    acceptable variance
+    acceptable downside
+    acceptable win rate
+    fresh-seed confirmation
+
+A candidate should not replace main.py because of one unusually strong run.
+
+
+============================================================
+54. NO AUTOMATIC PROMOTION FROM CMA-ES
+============================================================
+
+CMA-ES should produce:
+
+    candidate proposals
+
+not:
+
+    automatically trusted production code
+
+The intended workflow is:
+
+    CMA-ES
+       |
+       v
+    best optimization candidate
+       |
+       v
+    fresh verification
+       |
+       v
+    materialize candidate
+       |
+       v
+    large promotion benchmark
+       |
+       v
+    human/controlled promotion decision
+       |
+       v
+    main.py
+
+
+============================================================
+55. HISTORICAL RESULTS
+============================================================
+
+Historical versions remain useful for understanding evolution.
+
+However, historical scores affected by known contamination or evaluation flaws
+should not be presented as exact apples-to-apples scientific comparisons.
+
+In particular:
+
+    contaminated candidate construction
+    inconsistent seed assignment
+    incomparable fitness scales
+
+can invalidate direct historical score comparisons.
+
+Use historical results as engineering history.
+
+Use clean V6+ benchmarks for scientific conclusions.
+
+
+============================================================
+56. V6'S BIGGEST SUCCESS
+============================================================
+
+The biggest success of V6 is methodological.
+
+The project has evolved from:
+
+    "My score went up."
+
+to:
+
+    "Can I prove the score went up for the right reason?"
+
+That is a major change in engineering maturity.
+
+The discovery of:
+
+    candidate contamination
+    successive-halving comparability issues
+    RNG/resume reproducibility problems
+    staged-vector expansion problems
+
+is evidence that the development process is becoming much more rigorous.
+
+
+============================================================
+57. V6'S BIGGEST REMAINING WEAKNESS
+============================================================
+
+The biggest remaining weakness is not necessarily the optimizer.
+
+It is the lack of sufficiently large independent evidence that the optimized
+policy consistently beats the baseline.
+
+The optimizer is becoming more sophisticated faster than the evidence for the
+agent.
+
+Therefore the next stage should emphasize:
+
+    independent benchmarking
+    policy analysis
+    failure analysis
+    generalization
+
+
+============================================================
+58. WHAT NOT TO DO
+============================================================
+
+Do NOT:
+
+- optimize only on one seed
+- compare candidates using different game seeds
+- trust optimization fitness as final proof
+- promote optimization-only candidates
+- allow eliminated candidates to become generation best
+- silently compare different fitness definitions
+- reintroduce shared candidate module state
+- rely on mutable global RNG streams
+- assume more dimensions means a better policy
+- add penalties without validating the objective
+- endlessly increase population size
+- endlessly add CMA-ES restarts
+- overfit the adaptive opponent distribution
+- use baseline penalties so aggressively that the agent cannot innovate
+- judge the agent from one benchmark
+- optimize the benchmark instead of the game
+
+
+============================================================
+59. REQUIRED V7 EXPERIMENTS
+============================================================
+
+Before declaring V7 successful, run the following experiments.
+
+
+EXPERIMENT 1 — DEFAULT REGRESSION
+
+Confirm:
+
+    default_vector ≈ main.py
+
+
+EXPERIMENT 2 — CANDIDATE PATH EQUIVALENCE
+
+Confirm:
+
+    make_agent(vector)
+
+and:
+
+    materialized_candidate(vector)
+
+produce identical actions.
+
+
+EXPERIMENT 3 — INDEPENDENT PROMOTION
+
+Run:
+
+    4 × 500-game benchmarks
+
+against main.py.
+
+
+EXPERIMENT 4 — FITNESS CORRELATION
+
+Determine whether:
+
+    optimization fitness
+
+predicts:
+
+    independent terminal performance.
+
+
+EXPERIMENT 5 — PARAMETER SENSITIVITY
+
+Identify:
+
+    high-value dimensions
+    dead dimensions
+    interaction-heavy dimensions
+
+
+EXPERIMENT 6 — STAGED VS JOINT
+
+Compare both using identical simulation budgets.
+
+
+EXPERIMENT 7 — FIXED VS ADAPTIVE OPPONENT MIX
+
+Compare:
+
+    fixed
+    adaptive
+    mixed
+
+
+EXPERIMENT 8 — POLICY ABLATION
+
+Disable major policy components individually.
+
+Measure:
+
+    baseline
+    + component A
+    + component B
+    + component C
+
+This identifies which parts of the policy actually contribute.
+
+
+============================================================
+60. POLICY ABLATION
+============================================================
+
+This is extremely important.
+
+Do not assume every sophisticated component helps.
+
+For every major overlay/strategy module, measure:
+
+    main.py
+    main + overlay A
+    main + overlay B
+    main + overlay C
+    main + A + B
+    main + A + B + C
+
+If an overlay consistently hurts independent performance, remove it.
+
+Complexity is not automatically strength.
+
+
+============================================================
+61. OPPORTUNITY FOR ABLATION OF OPTIMIZER FEATURES
+============================================================
+
+Do the same for the optimization framework.
+
+Compare:
+
+    CMA-ES baseline
+    + common random numbers
+    + successive halving
+    + adaptive opponents
+    + baseline penalty
+    + staged optimization
+    + restarts
+
+Determine which features actually improve independent benchmark performance.
+
+This prevents building unnecessary infrastructure.
+
+
+============================================================
+62. COMPUTE BUDGET SHOULD BE MEASURED
+============================================================
+
+Every optimization experiment should report:
+
+    games played
+    wall-clock time
+    candidates evaluated
+    generations
+    restarts
+    final independent score
+
+Then calculate:
+
+    score improvement / million simulations
+
+and:
+
+    score improvement / hour
+
+A theoretically better optimizer that requires 100× more compute for a 1%
+improvement may not be the best engineering choice.
+
+
+============================================================
+63. NEXT-GENERATION POLICY ARCHITECTURE
+============================================================
+
+The likely long-term evolution is:
+
+    V6:
+        parameterized reactive strategy
+
+    V7:
+        parameterized + phase-aware + opponent-aware strategy
+
+    V8:
+        counterfactual action evaluation
+
+    V9:
+        strategic planning / learned value estimation
+
+The exact versions are not mandatory.
+
+The important point is the direction:
+
+    parameter tuning
+        ↓
+    decision optimization
+        ↓
+    strategic reasoning
+
+
+============================================================
+64. THE LONG-TERM GOAL
+============================================================
+
+The final objective should not be:
+
+    "Find the best 60 parameters."
+
+The objective should be:
+
+    "Build a policy that consistently makes better decisions than every
+     available baseline under unseen game conditions."
+
+
+============================================================
+65. FINAL PRIORITY ORDER
+============================================================
+
+PRIORITY 1 — PROVE GENERALIZATION
+
+Run large independent benchmarks.
+
+Do this before major optimizer changes.
+
+
+PRIORITY 2 — VALIDATE THE FITNESS FUNCTION
+
+Determine whether optimization fitness predicts real performance.
+
+
+PRIORITY 3 — REDUCE THE SEARCH SPACE
+
+Freeze dead parameters and identify redundant parameters.
+
+
+PRIORITY 4 — STABILIZE OPPONENT EVALUATION
+
+Maintain fixed canonical opponents alongside adaptive opponents.
+
+
+PRIORITY 5 — TEST STAGED VS JOINT OPTIMIZATION
+
+Use equal compute budgets.
+
+
+PRIORITY 6 — ANALYZE LOSSES
+
+Study the worst games rather than only the average.
+
+
+PRIORITY 7 — IMPROVE OPPONENT MODELING
+
+Predict what opponents will do.
+
+
+PRIORITY 8 — ADD COUNTERFACTUAL ACTION EVALUATION
+
+Evaluate possible actions rather than relying only on thresholds.
+
+
+PRIORITY 9 — ADD GAME-PHASE AWARENESS
+
+Use different strategic objectives in early, middle, and late game.
+
+
+PRIORITY 10 — ONLY THEN ADD MORE OPTIMIZER COMPLEXITY
+
+Do not add complexity simply because the current optimizer has plateaued.
+
+
+============================================================
+66. FINAL VERDICT
+============================================================
+
+V6 is a major milestone.
+
+It is not necessarily proven to be the strongest Kaggriculture agent yet.
+
+It IS the strongest experimental framework built so far.
+
+The engineering evolution is substantial:
+
+    early versions:
+        "the score increased"
+
+    V6:
+        "the experiment is designed to determine whether the score increase
+         actually represents a stronger policy"
+
+That is the correct evolution.
+
+The next breakthrough is unlikely to come from simply adding another optimizer
+feature.
+
+The more important breakthrough is likely to come from improving the actual
+policy:
+
+    better opponent modeling
+    better action valuation
+    better phase awareness
+    better resource valuation
+    better counterfactual reasoning
+    better failure recovery
+
+The optimizer is now strong enough that the policy itself is increasingly likely
+to be the bottleneck.
+
+
+============================================================
+67. SINGLE MOST IMPORTANT RULE FOR V7
+============================================================
+
+Before saying:
+
+    "V7 is better."
+
+require:
+
+    multiple independent seed sets
+    large sample sizes
+    comparison against main.py
+    terminal performance
+    win rate
+    variance
+    tail performance
+    fresh seeds
+    reproducible results
+
+If it consistently wins:
+
+    the evolution is real.
+
+If it does not:
+
+    do not hide the result behind a more complicated fitness function.
+
+Fix the policy.
+
+
+============================================================
+68. BOTTOM LINE
+============================================================
+
+V6 has evolved from a parameter optimizer into a real experimental system.
+
+The methodology is now approximately:
+
+    9/10
+
+The policy is approximately:
+
+    7–8/10
+
+The evidence for generalization is approximately:
+
+    6/10
+
+The next version should NOT be judged by how complicated the code becomes.
+
+It should be judged by one simple metric:
+
+    DOES THE AGENT CONSISTENTLY BEAT MAIN.PY ON UNSEEN GAMES?
+
+If yes:
+
+    keep the evaluation infrastructure,
+    freeze the proven methodology,
+    and aggressively improve the policy.
+
+If no:
+
+    stop adding optimizer complexity,
+    diagnose the policy,
+    and improve the actual decision-making.
+
+The guiding principle is:
+
+    LESS FAITH IN OPTIMIZATION SCORES.
+    MORE EVIDENCE FROM INDEPENDENT GAMES.
+
+And after that:
+
+    LESS OPTIMIZATION OF PARAMETERS.
+    MORE OPTIMIZATION OF DECISIONS.
