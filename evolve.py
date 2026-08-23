@@ -50,6 +50,34 @@ evaluation first, mathematical smoothing last):
      with a sigma schedule and varying restart locations instead of always
      resuming at the exact same sigma/point).
 
+v7 fixes a structural blind spot found by reading v6's own 23-generation
+checkpoint (evolve_checkpoint_v6.json): `best_verified_params` was still
+null and every single logged `baseline_mean` was negative (-624 to -1934),
+i.e. no candidate ever came close to beating main.py, despite
+`best_optimization_fitness` climbing to 6291. The cause: `es.tell()` was
+fed `diverse_fitness` -- by construction the score against the diverse
+historical-bot pool ONLY, with zero baseline component -- because only
+FINALISTS (post successive-halving) ever played baseline games, making a
+population-wide baseline-inclusive score heterogeneous. Consequence: CMA-ES
+itself had literally no selection pressure toward beating main.py for 23
+generations; it only ever got better at beating weak historical bots, and
+`baseline_mean` wandered as an unselected byproduct. This is exactly
+module-docstring section 11/13's "is the optimizer optimizing the proxy
+instead of the real objective" failure mode, empirically confirmed rather
+than hypothetical.
+
+  6. EVERY population member (not just finalists) now plays a small
+     common-random-number baseline probe during Stage A
+     (`--screening-baseline-seeds`, default 2 games) that IS folded into
+     the score `es.tell()` receives. `fitness` (diverse_fitness plus a
+     `--baseline-weight`-scaled, variance- and tolerance-aware baseline
+     term -- see `_score_accumulated`) replaces `diverse_fitness` as the
+     tell() signal. This costs ~2x popsize extra games/generation (a few
+     percent of the existing ~1000/generation budget) in exchange for the
+     search actually being pointed at the thing --promote ultimately
+     gates on. Finalists still additionally get the larger, more precise
+     baseline batch from Stage C for verification-quality reporting.
+
 Usage (unchanged surface):
     python3 evolve.py                       # run indefinitely, checkpointing every generation
     python3 evolve.py --generations 50       # bounded run (counts across restarts)
@@ -63,7 +91,8 @@ New optional controls (all have defaults; routine experimentation shouldn't
 need source edits -- see main()'s argparse block for the full list):
     --screening-opponents, --screening-seeds, --survivor-fraction,
     --finalists, --verification-seeds, --seed-batch-generations,
-    --baseline-tolerance, --staged-params, --sensitivity-every
+    --baseline-tolerance, --staged-params, --sensitivity-every,
+    --screening-baseline-seeds, --baseline-weight (v7)
 
 Opponent pool, worker architecture, and the fast-deepcopy patch are
 unchanged from v5 -- see their own docstrings/comments below.
@@ -90,10 +119,16 @@ LAMBDA_VARIANCE = 0.35
 STAGNATION_WINDOW = 20
 NOISE_FLOOR = 100.0  # per-game $
 BASELINE_FRACTION = 0.25          # target share of a FINALIST's total games that are vs. the baseline
-REGRESSION_PENALTY_MULT = 1.0     # extra fitness subtracted (beyond the proportional share) if baseline_mean < 0
 BASELINE_TOLERANCE_DEFAULT = 150.0    # $/game -- beyond this much regression, an additional steeper penalty applies
 EXTRA_REGRESSION_PENALTY_MULT = 2.0   # slope of that additional penalty, applied to the excess beyond tolerance
 MIN_BASELINE_GAMES = 8
+BASELINE_WEIGHT_DEFAULT = 8.0     # v7: multiplier on the baseline component of `fitness` (the value es.tell()
+                                  # now receives, see module docstring #6) -- needs to be large because raw
+                                  # diverse-pool deltas run 10-30x bigger than baseline deltas (weak historical
+                                  # bots get blown out for $10-20k/game; main.py loses/wins by $100s-$1000s), so
+                                  # without an explicit multiplier a baseline-losing candidate's diverse blowout
+                                  # trivially swamps the baseline penalty and CMA-ES never feels it.
+SCREENING_BASELINE_SEEDS_DEFAULT = 2   # per-candidate common-random-number baseline games added to Stage A
 
 # Trend-checkpoint scoring: reads money at three points in the 720-step
 # episode (env.steps already holds this post-env.run(), no extra sims).
@@ -186,6 +221,13 @@ _PROMOTION_SEED_POOL = _build_seed_pool(_POOL_SIZE_PROMOTION, "promotion")
 _STAGE_A_SEED_POOL = _OPTIMIZATION_SEED_POOL[0::3]
 _STAGE_B_SEED_POOL = _OPTIMIZATION_SEED_POOL[1::3]
 _STAGE_C_SEED_POOL = _OPTIMIZATION_SEED_POOL[2::3]
+
+# v7: the optimization-baseline pool is split the same disjoint-by-construction
+# way -- one half for the NEW all-population Stage A baseline probe (module
+# docstring #6), the other for the existing finalists-only baseline batch --
+# so the two can never draw the same seed in the same generation.
+_STAGE_A_BASELINE_SEED_POOL = _OPTIMIZATION_BASELINE_SEED_POOL[0::2]
+_FINALIST_BASELINE_SEED_POOL = _OPTIMIZATION_BASELINE_SEED_POOL[1::2]
 
 
 def get_generation_seed_batch(generation, batch_size, pool, batch_generations):
@@ -442,14 +484,19 @@ def _update_opponent_stats(stats, name, deltas):
         s["informativeness"] = statistics.pstdev(deltas)
 
 
-def _opponent_sampling_weights(stats, names, min_floor=0.15):
+def _opponent_sampling_weights(stats, names, min_floor=0.30):
     """Weighted-without-replacement sampling weights: opponents with higher
     recorded informativeness (this-generation across-candidate spread) get
     sampled more for the cheap screening stages, but every opponent keeps
     at least `min_floor` share of a uniform draw so none disappears
     permanently (an opponent every candidate loses to identically is less
     useful early, but may become discriminating again once the population
-    improves -- the floor keeps it in rotation for that)."""
+    improves -- the floor keeps it in rotation for that). v7: raised from
+    0.15 to 0.30 to better match the "adaptive selection should never
+    fully replace a stable canonical ruler" guidance -- a purely
+    informativeness-driven 85% share let the evaluation mix drift enough
+    generation-to-generation to add its own noise on top of an
+    already-noisy fitness signal."""
     raw = [stats.get(n, {}).get("informativeness", 0.0) for n in names]
     total_raw = sum(raw)
     n = len(names)
@@ -541,7 +588,34 @@ def _run_tasks(pool, tasks, accum):
     return time.time() - t0, len(tasks)
 
 
-def _score_accumulated(acc, baseline_tolerance):
+def _spearman_rho(xs, ys):
+    """Spearman rank correlation between two equal-length lists (no
+    ties-correction -- fine here since these are noisy float fitness scores,
+    exact ties are rare). Returns None if undefined (n<2 or a constant
+    list). Used to check whether Stage A's cheap screening ranking survives
+    into the final (Stage A+B+C) ranking for the candidates that made it to
+    Stage B -- if this correlation is weak, Stage A is eliminating good
+    candidates on noise rather than signal (a real risk of successive
+    halving that's otherwise invisible from the fitness numbers alone)."""
+    n = len(xs)
+    if n < 2:
+        return None
+
+    def _ranks(vals):
+        order = sorted(range(len(vals)), key=lambda i: vals[i])
+        ranks = [0] * len(vals)
+        for r, i in enumerate(order):
+            ranks[i] = r
+        return ranks
+
+    rx, ry = _ranks(xs), _ranks(ys)
+    mean_r = (n - 1) / 2
+    num = sum((a - mean_r) * (b - mean_r) for a, b in zip(rx, ry))
+    den = math.sqrt(sum((a - mean_r) ** 2 for a in rx) * sum((b - mean_r) ** 2 for b in ry))
+    return num / den if den > 0 else None
+
+
+def _score_accumulated(acc, baseline_tolerance, baseline_weight=BASELINE_WEIGHT_DEFAULT):
     """Turn one candidate's accumulated (diverse, baseline) game results into
     a fitness value plus every component spec section 10/26/27 wants logged
     separately."""
@@ -566,26 +640,30 @@ def _score_accumulated(acc, baseline_tolerance):
 
     # diverse_fitness: computable identically for EVERY candidate regardless
     # of how far it got in the Stage A/B/C race (an eliminated candidate only
-    # ever has Stage-A/B diverse games; a finalist has A+B+C) -- this is the
-    # homogeneous objective es.tell() uses (see _run_generation_racing),
-    # since feeding CMA-ES a mix of "diverse-only" scores for eliminated
-    # candidates and "diverse+baseline-adjusted" scores for finalists would
-    # make it compare two different objectives, not just noisier samples of
-    # the same one.
+    # ever has Stage-A/B diverse games; a finalist has A+B+C) -- kept as its
+    # own field (still used e.g. by run_sensitivity_analysis) even though it
+    # is no longer what es.tell() is fed (see below).
     diverse_fitness = diverse_mean - LAMBDA_VARIANCE * diverse_std
+
+    # v7: `fitness` = diverse_fitness plus an EXPLICIT, separately-weighted
+    # baseline term, instead of pooling diverse+baseline deltas into one
+    # combined mean. Pooling let raw diverse-pool blowout wins (weak
+    # historical bots, $10-20k/game deltas) completely swamp the baseline
+    # term (main.py, $100s-$1000s/game deltas) despite an "extra regression
+    # penalty" on top -- confirmed empirically: v6's checkpoint reached
+    # fitness=6291 with baseline_mean=-625 (a candidate that reliably LOSES
+    # to main.py). `baseline_weight` makes the baseline term's scale
+    # commensurate with diverse_fitness's by construction rather than by
+    # accident of how many games happen to be in each list. Every candidate
+    # now has a baseline sample (see module docstring #6 / _run_generation_
+    # racing's Stage A), so this is a homogeneous, tell()-safe objective for
+    # the whole population, not just finalists.
     fitness = diverse_fitness
     if baseline_trend:
-        # fitness (NOT diverse_fitness) folds in the baseline-regression
-        # penalty -- used for finalist ranking / gen-best / verification
-        # triggering, where every candidate being compared already has a
-        # baseline sample, so the objective stays homogeneous there too.
-        combined_mean = statistics.mean(diverse_trend + baseline_trend)
-        combined_std = statistics.pstdev(diverse_trend + baseline_trend) if len(diverse_trend + baseline_trend) > 1 else 0.0
-        fitness = combined_mean - LAMBDA_VARIANCE * combined_std
-        if baseline_mean < 0:
-            fitness += REGRESSION_PENALTY_MULT * baseline_mean
+        baseline_component = baseline_weight * (baseline_mean - LAMBDA_VARIANCE * baseline_std)
         if baseline_mean < -baseline_tolerance:
-            fitness += EXTRA_REGRESSION_PENALTY_MULT * (baseline_mean + baseline_tolerance)
+            baseline_component += EXTRA_REGRESSION_PENALTY_MULT * baseline_weight * (baseline_mean + baseline_tolerance)
+        fitness = diverse_fitness + baseline_component
 
     return {
         "fitness": fitness,
@@ -631,7 +709,23 @@ def _run_generation_racing(es, pool, generation, args, opponent_stats, rng):
     total_games += n
     total_elapsed += elapsed
 
-    stage_a_scores = {i: _score_accumulated(accum[i], args.baseline_tolerance)["fitness"] for i in cand_keys}
+    # v7: EVERY population member (not just eventual finalists) also plays a
+    # small common-random-number baseline probe right here in Stage A -- see
+    # module docstring #6. Without this, `fitness` below would still only
+    # have a baseline component for finalists, and es.tell() (which now
+    # reads `fitness`, not `diverse_fitness`) would be back to comparing a
+    # baseline-blind score for most of the population against a
+    # baseline-aware one for a few survivors -- the same "two different
+    # objectives" problem the Stage A/B/C split was built to avoid.
+    seeds_a_baseline = get_generation_seed_batch(generation, args.screening_baseline_seeds,
+                                                  _STAGE_A_BASELINE_SEED_POOL, args.seed_batch_generations)
+    tasks_a_baseline = _build_baseline_tasks(cand_keys, params_by_key, seeds_a_baseline)
+    elapsed, n = _run_tasks(pool, tasks_a_baseline, accum)
+    total_games += n
+    total_elapsed += elapsed
+
+    stage_a_scores = {i: _score_accumulated(accum[i], args.baseline_tolerance, args.baseline_weight)["fitness"]
+                       for i in cand_keys}
     n_survive_b = max(1, math.ceil(n_pop * args.survivor_fraction))
     survivors_b = sorted(cand_keys, key=lambda i: -stage_a_scores[i])[:n_survive_b]
 
@@ -650,7 +744,8 @@ def _run_generation_racing(es, pool, generation, args, opponent_stats, rng):
     total_games += n
     total_elapsed += elapsed
 
-    stage_b_scores = {i: _score_accumulated(accum[i], args.baseline_tolerance)["fitness"] for i in survivors_b}
+    stage_b_scores = {i: _score_accumulated(accum[i], args.baseline_tolerance, args.baseline_weight)["fitness"]
+                       for i in survivors_b}
     n_finalists = min(args.finalists, len(survivors_b))
     finalists = sorted(survivors_b, key=lambda i: -stage_b_scores[i])[:n_finalists]
 
@@ -679,7 +774,7 @@ def _run_generation_racing(es, pool, generation, args, opponent_stats, rng):
     n_baseline = max(MIN_BASELINE_GAMES, round(diverse_games_so_far * BASELINE_FRACTION / (1 - BASELINE_FRACTION)))
     if n_baseline % 2:
         n_baseline += 1
-    seeds_baseline = get_generation_seed_batch(generation, n_baseline, _OPTIMIZATION_BASELINE_SEED_POOL,
+    seeds_baseline = get_generation_seed_batch(generation, n_baseline, _FINALIST_BASELINE_SEED_POOL,
                                                 args.seed_batch_generations)
     tasks_baseline = _build_baseline_tasks(finalists, params_by_key_c, seeds_baseline)
     elapsed, n = _run_tasks(pool, tasks_baseline, accum)
@@ -687,22 +782,31 @@ def _run_generation_racing(es, pool, generation, args, opponent_stats, rng):
     total_elapsed += elapsed
 
     # ---- Score everyone; eliminated candidates keep their lower-fidelity
-    # (Stage-A/B-only, baseline-blind) score -- standard successive-halving
-    # practice: a pruned arm's fitness estimate is real, just noisier. ----
-    final_scores = {i: _score_accumulated(accum[i], args.baseline_tolerance) for i in cand_keys}
+    # (Stage-A/B-only diverse games, Stage-A-only baseline games) score --
+    # standard successive-halving practice: a pruned arm's fitness estimate
+    # is real, just noisier. ----
+    final_scores = {i: _score_accumulated(accum[i], args.baseline_tolerance, args.baseline_weight)
+                     for i in cand_keys}
     fitnesses = [final_scores[i]["fitness"] for i in cand_keys]
-    # es.tell() gets `diverse_fitness`, NOT `fitness` -- `fitness` includes
-    # the baseline-regression term only for finalists (who alone accumulate
-    # baseline games), which would make CMA-ES compare a diverse-only score
-    # for eliminated candidates against a diverse+baseline score for
-    # finalists: two different objectives, not just two different sample
-    # sizes of the same one. `diverse_fitness` is well-defined for every
-    # candidate the same way, so it's what actually drives the search;
-    # `fitness` (with the baseline term) is reserved for finalist
-    # ranking/gen-best/verification below, where it's homogeneous across
-    # whatever's being compared.
-    tell_fitnesses = [final_scores[i]["diverse_fitness"] for i in cand_keys]
-    es.tell(solutions_norm, [-f for f in tell_fitnesses])
+
+    # Diagnostic only (does not affect selection): does Stage A's cheap
+    # screening ranking of the survivors agree with their FINAL (Stage
+    # A+B+C) ranking? A weak correlation would mean Stage A is eliminating
+    # good candidates on noise, not signal -- invisible from the fitness
+    # numbers alone, so it's tracked explicitly.
+    stage_a_vs_final_rho = _spearman_rho([stage_a_scores[i] for i in survivors_b],
+                                          [final_scores[i]["fitness"] for i in survivors_b])
+    # v7: es.tell() now gets `fitness` (diverse_fitness + weighted baseline
+    # component), NOT `diverse_fitness` -- see module docstring #6. This is
+    # now safe/homogeneous because EVERY candidate in cand_keys has at least
+    # the Stage A baseline probe above, not just finalists; a finalist's
+    # baseline sample is simply larger/less noisy (same successive-halving
+    # logic already applied to diverse games). Feeding CMA-ES diverse_fitness
+    # alone -- v6's approach -- gave it literally no gradient toward beating
+    # the baseline at all, which matches what the checkpoint showed: fitness
+    # climbing generation over generation while baseline_mean stayed
+    # negative throughout.
+    es.tell(solutions_norm, [-f for f in fitnesses])
 
     # Update opponent informativeness stats from this generation's Stage A
     # spread (the cheapest, broadest-coverage signal -- see section 18).
@@ -721,6 +825,7 @@ def _run_generation_racing(es, pool, generation, args, opponent_stats, rng):
         "finalists": finalists,
         "solutions_norm": solutions_norm,
         "solutions_real": solutions_real,
+        "stage_a_vs_final_rho": stage_a_vs_final_rho,
     }
     return fitnesses, final_scores, diag
 
@@ -730,7 +835,7 @@ def _run_generation_racing(es, pool, generation, args, opponent_stats, rng):
 # ===========================================================================
 
 def verify_candidate(pool, params_vector, n_verification_seeds, n_verification_baseline_games,
-                      baseline_tolerance):
+                      baseline_tolerance, baseline_weight=BASELINE_WEIGHT_DEFAULT):
     cand_key = "verify"
     accum = {cand_key: {"diverse": [], "baseline": [], "by_opponent": {}}}
     params_by_key = {cand_key: params_vector}
@@ -743,7 +848,7 @@ def verify_candidate(pool, params_vector, n_verification_seeds, n_verification_b
     tasks_b = _build_baseline_tasks([cand_key], params_by_key, baseline_seeds)
     _run_tasks(pool, tasks_b, accum)
 
-    return _score_accumulated(accum[cand_key], baseline_tolerance)
+    return _score_accumulated(accum[cand_key], baseline_tolerance, baseline_weight)
 
 
 # ===========================================================================
@@ -931,14 +1036,15 @@ def dry_run(args):
     n_finalists = min(args.finalists, n_survive_b)
 
     stage_a_games = popsize * screen_count * args.screening_seeds * 2
+    stage_a_baseline_games = popsize * args.screening_baseline_seeds
     stage_b_games = n_survive_b * stage_b_count * args.stage_b_seeds * 2
     stage_c_diverse_games = n_finalists * max(0, n_diverse - screen_count - stage_b_count) * args.stage_c_seeds * 2
     approx_baseline_games = max(MIN_BASELINE_GAMES, round(
         (screen_count * args.screening_seeds * 2) * BASELINE_FRACTION / (1 - BASELINE_FRACTION)))
     stage_c_baseline_games = n_finalists * approx_baseline_games
-    total = stage_a_games + stage_b_games + stage_c_diverse_games + stage_c_baseline_games
+    total = stage_a_games + stage_a_baseline_games + stage_b_games + stage_c_diverse_games + stage_c_baseline_games
 
-    print("=== evolve.py v6 dry run (no games will be played) ===")
+    print("=== evolve.py v7 dry run (no games will be played) ===")
     print(f"parameter dimensions: {tuning_spec.DIM}")
     print(f"parameter groups: {[(g, len(v)) for g, v in tuning_spec.PARAM_GROUPS.items()]}")
     print(f"kind groups: {[(k, len(v)) for k, v in tuning_spec.KIND_GROUPS.items()]}")
@@ -950,6 +1056,8 @@ def dry_run(args):
     print(f"finalists: {n_finalists}")
     print(f"stage C seeds/opponent: {args.stage_c_seeds}")
     print(f"expected stage A games/generation: {stage_a_games}")
+    print(f"expected stage A baseline-probe games/generation: {stage_a_baseline_games} "
+          f"(v7: every population member, not just finalists -- see module docstring #6)")
     print(f"expected stage B games/generation: {stage_b_games}")
     print(f"expected stage C diverse games/generation: {stage_c_diverse_games}")
     print(f"expected stage C baseline games/generation: {stage_c_baseline_games} "
@@ -958,7 +1066,7 @@ def dry_run(args):
     print(f"verification seeds/opponent: {args.verification_seeds}  "
           f"verification baseline games: {args.verification_baseline_games}")
     print(f"seed batch generations: {args.seed_batch_generations}")
-    print(f"baseline tolerance: {args.baseline_tolerance}  regression penalty mult: {REGRESSION_PENALTY_MULT}  "
+    print(f"baseline tolerance: {args.baseline_tolerance}  baseline weight: {args.baseline_weight}  "
           f"extra penalty mult beyond tolerance: {EXTRA_REGRESSION_PENALTY_MULT}")
     print(f"staged params: {args.staged_params}  stage order: {DEFAULT_STAGE_ORDER if args.staged_params else 'n/a (all active)'}")
     print(f"sensitivity analysis every: {args.sensitivity_every or 'off'}")
@@ -998,6 +1106,11 @@ def main():
     ap.add_argument("--verification-baseline-games", type=int, default=VERIFICATION_BASELINE_GAMES_DEFAULT)
     ap.add_argument("--seed-batch-generations", type=int, default=SEED_BATCH_GENERATIONS_DEFAULT)
     ap.add_argument("--baseline-tolerance", type=float, default=BASELINE_TOLERANCE_DEFAULT)
+    ap.add_argument("--screening-baseline-seeds", type=int, default=SCREENING_BASELINE_SEEDS_DEFAULT,
+                     help="v7: common-random-number baseline games EVERY population member plays in Stage A, "
+                          "so es.tell() gets a homogeneous baseline signal instead of zero baseline signal")
+    ap.add_argument("--baseline-weight", type=float, default=BASELINE_WEIGHT_DEFAULT,
+                     help="v7: multiplier on the baseline component of `fitness` (see module docstring #6)")
     ap.add_argument("--staged-params", action="store_true",
                      help="Optimize PARAM_GROUPS one stage at a time (cumulative) instead of all 60 dims at once")
     ap.add_argument("--stage-generations", type=int, default=15,
@@ -1068,13 +1181,14 @@ def main():
         leg_bests_norm = [x0_norm]
 
     n_diverse = len(DIVERSE_OPPONENTS)
-    print(f"evolve.py v6: {tuning_spec.DIM} dims, workers={args.workers}, "
+    print(f"evolve.py v7: {tuning_spec.DIM} dims, workers={args.workers}, "
           f"diverse_opponents={n_diverse} ({[o['name'] for o in DIVERSE_OPPONENTS]}), "
-          f"screening={args.screening_opponents}op/{args.screening_seeds}sd, "
+          f"screening={args.screening_opponents}op/{args.screening_seeds}sd/"
+          f"{args.screening_baseline_seeds}bsd, "
           f"survivor_fraction={args.survivor_fraction}, finalists={args.finalists}, "
           f"seed_batch_generations={args.seed_batch_generations}, "
-          f"baseline_tolerance={args.baseline_tolerance}, staged_params={args.staged_params}, "
-          f"max_restarts={args.max_restarts}")
+          f"baseline_tolerance={args.baseline_tolerance}, baseline_weight={args.baseline_weight}, "
+          f"staged_params={args.staged_params}, max_restarts={args.max_restarts}")
 
     stage_order = DEFAULT_STAGE_ORDER if args.staged_params else None
     stage_index = 0 if stage_order else None
@@ -1224,12 +1338,14 @@ def main():
                 leg_bests_norm.append(_to_normalized(best_opt_params))
 
                 s = final_scores[gen_best_idx]
+                rho = diag["stage_a_vs_final_rho"]
                 print(f"[gen {generation}] popsize={len(solutions_real)} games={diag['n_games']} "
                       f"elapsed={diag['elapsed']:.1f}s  gen_best={gen_best_fitness:.1f}  "
                       f"overall_best={best_opt_fitness:.1f} (diverse_mean={s['diverse_mean']:.1f} "
                       f"diverse_std={s['diverse_std']:.1f} baseline_mean={s['baseline_mean']:.1f} "
                       f"terminal_mean={s['terminal_mean']:.1f} n_finalist_games={s['n_diverse_games']}) "
-                      f"finalists={len(diag['finalists'])}")
+                      f"finalists={len(diag['finalists'])} "
+                      f"stage_a_vs_final_rho={'n/a' if rho is None else f'{rho:.2f}'}")
                 # diag["solutions_norm"] is always full 60-dim (expanded
                 # inside _run_generation_racing via _FakeES.ask()), so this
                 # must index against the FULL name list, not the reduced
@@ -1242,7 +1358,8 @@ def main():
                 # allowed to become the checkpoint's "verified" candidate.
                 if new_record:
                     v = verify_candidate(pool, best_opt_params, args.verification_seeds,
-                                          args.verification_baseline_games, args.baseline_tolerance)
+                                          args.verification_baseline_games, args.baseline_tolerance,
+                                          args.baseline_weight)
                     print(f"  [verify] fresh-seed check: fitness={v['fitness']:.1f} "
                           f"diverse_mean={v['diverse_mean']:.1f} baseline_mean={v['baseline_mean']:.1f} "
                           f"baseline_win_rate={v.get('baseline_win_rate')}")
