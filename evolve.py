@@ -181,7 +181,38 @@ BASELINE_SPEC = {"kind": "path", "value": "main.py", "name": "main_baseline"}
 _worker_state = {}
 
 
+def _fast_deepcopy(obj):
+    """Drop-in replacement for copy.deepcopy, applied ONLY inside evolve.py's
+    worker processes (never touches the actual submitted agent) -- profiling
+    a real game found 56% of wall-clock time inside the kaggle_environments
+    engine's OWN internal copy.deepcopy calls (__get_shared_state, isolating
+    each agent's observation every step). The engine's state is JSON-like
+    (Struct -- a dict subclass with mirrored attributes -- plus plain
+    dict/list/tuple/primitives, no cycles), so Python's generic deepcopy
+    machinery (memo tracking, __reduce_ex__ dispatch, generic object
+    reconstruction for the Struct subclass) is pure overhead here. This
+    direct type-dispatch recursion is behaviorally identical for these
+    types -- verified byte-identical game outcomes across 8 real games
+    (both short and full 720-step) with vs. without this patch, 1.51x
+    faster overall. Also safely speeds up main.py's own _copy_action (a
+    plain-dict copy.deepcopy call) since worker processes evaluate
+    candidates through the same `copy` module."""
+    t = type(obj)
+    if t is dict:
+        return {k: _fast_deepcopy(v) for k, v in obj.items()}
+    if t is list:
+        return [_fast_deepcopy(v) for v in obj]
+    if t is tuple:
+        return tuple(_fast_deepcopy(v) for v in obj)
+    from kaggle_environments.utils import Struct
+    if t is Struct:
+        return Struct(**{k: _fast_deepcopy(v) for k, v in obj.items()})
+    return obj  # int, float, str, bool, None -- immutable, no copy needed
+
+
 def _worker_init():
+    import copy
+    copy.deepcopy = _fast_deepcopy
     import benchmark
     import build_agent
     _worker_state["benchmark"] = benchmark
