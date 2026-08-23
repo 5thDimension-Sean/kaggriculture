@@ -12,7 +12,22 @@ project's history for disabling a gate).
 each already scaled to its own [low, high] range (not a further-normalized
 [0,1] cube) -- CMA-ES is given per-dimension initial std proportional to
 each range in evolve.py, which handles the scale mismatch directly.
+
+v6: added PARAM_GROUPS (a name -> [param names] mapping used by evolve.py's
+optional staged-parameter-activation mode) and KIND_GROUPS (continuous vs.
+integer vs. boolean name lists, derived from the existing per-entry `kind`
+field -- discreteness was already correctly modeled via `kind` and
+vector_to_params()'s int-round/bool-threshold logic; these are just a
+convenience view over it for reporting/dry-run, not a behavior change).
+Also reparameterized the shed-capacity guard's threshold as
+`shed_guard_overflow_buffer` (games-until-the-100-item-cap, 1-30) instead
+of the raw `shed_guard_threshold` (70-99) -- purely a search-space
+relabeling (buffer = SHED_CAPACITY - threshold, an invertible affine
+transform), vector_to_params() still emits `shed_guard_threshold` in
+overlay_params so overlays.py itself needs no change.
 """
+
+SHED_CAPACITY = 100  # engine's real shed-item hard cap (kaggle_environments default; see overlays.py's shed_guard docstring)
 
 SPEC = [
     # -- main.py's own knobs --
@@ -77,7 +92,12 @@ SPEC = [
     ("shed_guard_enabled",             0.0,  1.0,  0.0,   "bool"),
     ("shed_guard_start",               300,  719,  300,   "int"),
     ("shed_guard_stop",                300,  719,  719,   "int"),
-    ("shed_guard_threshold",           70,   99,   90,    "int"),
+    # v6: reparameterized from the raw shed_guard_threshold (70-99) to a
+    # "how many items of headroom before the 100-item cap" buffer (1-30) --
+    # buffer = SHED_CAPACITY - threshold. Same information, more legible
+    # search variable; vector_to_params() converts back to
+    # overlay_params["shed_guard_threshold"] so overlays.py is unchanged.
+    ("shed_guard_overflow_buffer",     1,    30,   10,    "int"),
     ("shed_guard_batch_cap",           1,    30,   20,    "int"),
 
     # -- front-run item priority (order = argsort, highest weight sells first
@@ -146,7 +166,9 @@ def vector_to_params(x):
     overlay_params = {k: v for k, v in d.items()
                        if k not in base_params
                        and not k.startswith("fr_priority_")
-                       and not k.startswith("fr_enabled_")}
+                       and not k.startswith("fr_enabled_")
+                       and k != "shed_guard_overflow_buffer"}
+    overlay_params["shed_guard_threshold"] = SHED_CAPACITY - d["shed_guard_overflow_buffer"]
     priorities = {item: d[f"fr_priority_{item}"] for item in _FR_ITEMS_DEFAULT_ORDER}
     enabled = {item: d[f"fr_enabled_{item}"] >= 0.5 for item in _FR_ITEMS_DEFAULT_ORDER}
     fr_items_order = tuple(
@@ -163,3 +185,62 @@ def default_vector():
 def initial_std():
     """Per-dimension initial CMA-ES step size: 25% of each param's range."""
     return [0.25 * (hi - lo) for lo, hi in zip(LOWS, HIGHS)]
+
+
+# ===========================================================================
+# v6: parameter groups (evolve.py's optional staged-activation mode) and
+# kind groups (continuous/integer/boolean views over the existing per-entry
+# `kind` field, for dry-run reporting). Built from the ACTUAL names in SPEC
+# above -- never hand-duplicated -- so they can't silently drift out of sync
+# with it.
+# ===========================================================================
+
+PARAM_GROUPS = {
+    "core_strategy": [
+        "weed_replay_steps", "town_demand_pulse_period", "town_demand_check_interval",
+        "town_demand_single_shop_bonus", "town_demand_multi_shop_bonus",
+    ],
+    "premium_shift": [
+        "premium_shift_enabled", "premium_shift_start", "premium_shift_stop",
+        "premium_shift_fraction", "premium_shift_max_batch", "premium_shift_min_future_qty",
+        "premium_shift_opp_ready_threshold", "mirror_max_distance",
+    ],
+    "fert_relay": [
+        "fert_relay_enabled", "fert_relay_lead", "fert_relay_lead_heavy_animal",
+        "fert_relay_start", "fert_relay_stop",
+    ],
+    "price_floor": ["price_floor_enabled"],
+    "rank_sell_slots": ["rank_sell_slots_enabled", "demand_alpha"],
+    "item_reserves": [
+        "opp_sell_enabled", "opp_sell_start", "opp_sell_stop", "opp_sell_batch_cap",
+        "opp_sell_base_fraction_MILK", "opp_sell_base_fraction_WOOL",
+        "opp_sell_base_fraction_STRAWBERRY", "opp_sell_base_fraction_MELON",
+        "opp_sell_floor_fraction_MILK", "opp_sell_floor_fraction_WOOL",
+        "opp_sell_floor_fraction_STRAWBERRY", "opp_sell_floor_fraction_MELON",
+        "opp_sell_ramp_start", "opp_sell_min_supply_fraction",
+    ],
+    "terminal_liquidation": ["terminal_soft_start", "terminal_hard_start"],
+    "shed_overflow": [
+        "shed_guard_enabled", "shed_guard_start", "shed_guard_stop",
+        "shed_guard_overflow_buffer", "shed_guard_batch_cap",
+    ],
+    "front_run_priority": [f"fr_priority_{item}" for item in _FR_ITEMS_DEFAULT_ORDER],
+    "front_run_gates": [f"fr_enabled_{item}" for item in _FR_ITEMS_DEFAULT_ORDER],
+}
+
+# Sanity: every name in SPEC must be in exactly one group, and vice versa --
+# a hard AssertionError here (not a silent drift) if a future SPEC edit adds
+# a name and forgets to group it.
+_grouped = [n for names in PARAM_GROUPS.values() for n in names]
+assert sorted(_grouped) == sorted(NAMES), (
+    "PARAM_GROUPS is out of sync with SPEC -- "
+    f"in SPEC but ungrouped: {sorted(set(NAMES) - set(_grouped))}, "
+    f"grouped but not in SPEC: {sorted(set(_grouped) - set(NAMES))}"
+)
+assert len(_grouped) == len(set(_grouped)), "PARAM_GROUPS has a name listed in more than one group"
+
+KIND_GROUPS = {
+    "continuous": [n for n, k in zip(NAMES, KINDS) if k == "float"],
+    "integer": [n for n, k in zip(NAMES, KINDS) if k == "int"],
+    "boolean": [n for n, k in zip(NAMES, KINDS) if k == "bool"],
+}
