@@ -161,11 +161,18 @@ def reconstruct_player(player_dir, out_dir, name):
     return result
 
 
+def _reconstruct_one(task):
+    name, path, out_dir = task
+    return reconstruct_player(path, out_dir, name)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", help="Single player directory (has manifest.json)")
     ap.add_argument("--scan", help="Directory of player subdirectories to process all of")
     ap.add_argument("--out", default="routes_6_6")
+    ap.add_argument("--workers", type=int, default=1,
+                     help="Parallelize across players with a multiprocessing.Pool (--scan only)")
     args = ap.parse_args()
 
     targets = []
@@ -179,10 +186,18 @@ def main():
     else:
         raise SystemExit("Pass --dir or --scan")
 
-    results = []
-    for name, path in targets:
-        r = reconstruct_player(path, args.out, name)
-        results.append(r)
+    os.makedirs(args.out, exist_ok=True)
+    tasks = [(name, path, args.out) for name, path in targets]
+
+    if args.workers > 1 and len(tasks) > 1:
+        import multiprocessing as mp
+        with mp.Pool(processes=min(args.workers, len(tasks))) as pool:
+            results = pool.map(_reconstruct_one, tasks)
+    else:
+        results = [_reconstruct_one(t) for t in tasks]
+
+    for r in results:
+        name = r["name"]
         for seat in (0, 1):
             b = r[f"p{seat}"]
             if not b:

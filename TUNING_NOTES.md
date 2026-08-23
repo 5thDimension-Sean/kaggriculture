@@ -313,3 +313,76 @@ a winner into main.py after it beats the current baseline on a real
 built via `build_agent.write_self_contained_candidate()` (NOT the old
 multi-file `write_candidate()`, removed) and verified via
 `make_submission.py`-style file-path self-test before ever submitting.
+
+**v3 run 1 result (100 generations, no restarts fired)**: found a checkpoint
+whose OWN small-sample (34-game) baseline estimate looked positive
+(+104/game), but a real 40-game `benchmark.py` validation showed it actually
+**loses** -214/game to the current 6.7 baseline — close-margin, statistical
+noise, not a real win. NOT promoted. Root cause of the "no restarts fired"
+part: the stagnation detector compared raw per-generation `gen_best` values,
+which fluctuate by more than `NOISE_FLOOR` from CMA-ES's own sampling noise
+even at a genuine plateau — so it never once triggered in 100 generations.
+Fixed to compare the RUNNING RECORD (`best_fitness_history`) instead: "has a
+new best been set in the last `STAGNATION_WINDOW` generations", which is
+what "plateaued" actually means. **v3 run 2** (same config, fixed detector)
+found a genuine IPOP restart at gen ~20-25, but converged to essentially the
+same fitness ceiling (~6,600-6,700) as run 1 — two independent runs landing
+in the same place is a real signal that this 40-dim search space (fixed
+route) has been largely exhausted by round 1's original tuning, not a fluke
+of one run.
+
+## Route re-survey (2026-08-23): still no win, but real signal about the ladder's shape
+
+Per the plateau above, paused CMA-ES tuning to re-check whether a stronger
+backbone route now exists (the Phase A survey data was ~1 day stale, and the
+ladder reshuffles daily). Re-ran `download_replays.py` with a much deeper
+per-player sample (35 games, up from 3-20) and parallelized
+`route_mining.py` across players (`--workers N`, new) to make this
+practical to re-run — a full 22-player scan with ~1.1GB/player of replay
+JSON took several minutes even at 22-way parallelism.
+
+Result: **Kobe BRYANT's earlier "98.4%, but only n=3 — too thin to trust"
+qualification evaporated with a deeper sample** (92.6% at n=8) — confirms
+that flag was right to be skeptical. **Three players newly qualified**:
+ReCurSiON (96.6%/97.4%, was already known), and two brand-new top-20
+entrants, mandgeee (99.4%/99.5%) and "u" (99.2%/99.1%) — both near-perfect
+scripted bots, even more consistent than Filip's own 98.7%/99.3%. All three
+have near-symmetric P0/P1 routes (98-99% step-identical, like Filip's), so
+no dual-route architecture was needed to test them.
+
+**All three lost to Filip's route**, including a bare-route (no overlays)
+head-to-head for ReCurSiON specifically, ruling out "the overlay tuning is
+mismatched to the new route" as an excuse:
+- mandgeee: -16,524/game (0/20) with overlays
+- u: -15,799/game (0/20) with overlays
+- ReCurSiON: -1,453/game (5/20) with overlays, -1,828/game (5/20) bare-route
+
+**Real structural finding, not just a rejection**: the most-clonable players
+(mandgeee/u, 99%+ consistency) sit LOWER on the actual leaderboard
+(2,735-2,800) than the genuinely adaptive players we can't clone at all
+(Ryo Hasegawa/Crop Dusta/Subramanya N, 3,000-3,100+, all under 65%
+consistency). Clonability and route strength appear inversely correlated on
+this ladder -- Filip being both strong AND highly consistent looks like a
+rare exception, not a pattern likely to repeat on a re-survey.
+**How to apply**: don't expect a future re-survey to find a better route
+unless the ladder's TOP players (not just newcomers) become more
+consistent -- that would be a bigger shift than day-to-day reshuffling
+typically produces. The remaining real lever for a route-quality jump is
+`train.py`/`model.py`'s dormant PPO pipeline (a learned, not cloned, policy),
+not more mining.
+
+## Bug found: benchmark.py's route-only mode was silently broken (2026-08-23)
+
+While isolating route strength from overlay-tuning effects (bare-route
+ReCurSiON vs. bare-route Filip), found `make_route_only_agent()` called
+`_weed_repair_action(obs, action, _ACTIONS, step)` -- FOUR args -- against a
+function whose real signature is `_weed_repair_action(obs, action, step)`
+-- THREE. The TypeError was silently caught by the wrapper's own
+`except Exception: return PASS` fallback, so every route-only agent this
+project has EVER benchmarked was actually a do-nothing PASS-bot (confirmed:
+both sides finished a full 720-step game at a flat, unchanged 3,000 starting
+money before the fix). Fixed by dropping the extra `_ACTIONS` argument.
+**How to apply**: any historical "route-only" / "how much does market logic
+contribute" comparison in this project's memory or old commit messages was
+measuring against a broken baseline -- don't trust the specific numbers,
+only the fixed version going forward.

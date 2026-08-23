@@ -350,6 +350,7 @@ def main():
     if ckpt is not None:
         x0_norm = _to_normalized(ckpt["best_params"])
         fitness_history = ckpt.get("fitness_history", [])
+        best_fitness_history = ckpt.get("best_fitness_history") or list(fitness_history)
         generation = ckpt["generation"]
         best_fitness = ckpt["best_fitness"]
         best_params = ckpt["best_params"]
@@ -363,6 +364,7 @@ def main():
     else:
         x0_norm = _to_normalized(tuning_spec.default_vector())
         fitness_history = []
+        best_fitness_history = []
         generation = 0
         best_fitness = float("-inf")
         best_params = tuning_spec.default_vector()
@@ -401,6 +403,7 @@ def main():
                         "best_mean_delta": best_mean_delta, "best_std_delta": best_std_delta,
                         "best_baseline_mean_delta": best_baseline_mean_delta,
                         "best_params": list(best_params), "fitness_history": fitness_history,
+                        "best_fitness_history": best_fitness_history,
                         "sigma0": float(es.sigma), "converged": True, "restarts_used": restarts_used,
                         "base_popsize": base_popsize, "param_names": tuning_spec.NAMES,
                         "diverse_opponents": [o["name"] for o in DIVERSE_OPPONENTS],
@@ -421,16 +424,25 @@ def main():
                     best_mean_delta = result["mean_deltas"][gen_best_idx]
                     best_std_delta = result["std_deltas"][gen_best_idx]
                     best_baseline_mean_delta = result["baseline_means"][gen_best_idx]
+                best_fitness_history.append(best_fitness)
 
                 print(f"[gen {generation}] popsize={len(result['solutions_real'])} games={result['n_games']} "
                       f"elapsed={result['elapsed']:.1f}s  gen_best={gen_best_fitness:.1f}  "
                       f"overall_best={best_fitness:.1f} (mean={best_mean_delta:.1f} std={best_std_delta:.1f} "
                       f"baseline_mean={best_baseline_mean_delta:.1f})")
 
+                # Stagnation = the RUNNING RECORD (best_fitness_history) hasn't
+                # improved by more than NOISE_FLOOR over the window -- checking
+                # raw per-generation gen_best spread instead (v3's original
+                # approach) never fires in practice: per-generation noise from
+                # CMA-ES's own stochastic sampling routinely exceeds NOISE_FLOOR
+                # even at a genuine plateau, so a real 100-generation run with
+                # zero new records never triggered a single IPOP restart. This
+                # measures "has a new best been set recently", which is what
+                # "plateaued" actually means.
                 converged = False
-                if len(fitness_history) >= STAGNATION_WINDOW:
-                    window = fitness_history[-STAGNATION_WINDOW:]
-                    if max(window) - min(window) < NOISE_FLOOR and best_fitness - window[0] < NOISE_FLOOR:
+                if len(best_fitness_history) >= STAGNATION_WINDOW:
+                    if best_fitness - best_fitness_history[-STAGNATION_WINDOW] < NOISE_FLOOR:
                         converged = True
 
                 save_checkpoint(args.checkpoint, {
@@ -438,6 +450,7 @@ def main():
                     "best_mean_delta": best_mean_delta, "best_std_delta": best_std_delta,
                     "best_baseline_mean_delta": best_baseline_mean_delta,
                     "best_params": list(best_params), "fitness_history": fitness_history,
+                    "best_fitness_history": best_fitness_history,
                     "sigma0": float(es.sigma), "converged": converged and restarts_used >= args.max_restarts,
                     "restarts_used": restarts_used, "base_popsize": base_popsize,
                     "param_names": tuning_spec.NAMES,

@@ -82,7 +82,7 @@ def make_route_only_agent(path):
             step = min(max(0, int((obs.get("step") or 0))), len(_ACTIONS) - 1)
             action = _copy_action(_ACTIONS[step])
             if _weed_repair is not None:
-                action = _weed_repair(obs, action, _ACTIONS, step)
+                action = _weed_repair(obs, action, step)
             return _align_hands(action, obs)
         except Exception:
             return {"farmer": ["PASS"], "hands": [], "market": []}
