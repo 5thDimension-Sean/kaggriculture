@@ -1,18 +1,32 @@
-"""evolve.py -- v3 CMA-ES self-improvement loop for MapleLeaf 6.7.
+"""evolve.py -- v4 CMA-ES self-improvement loop for MapleLeaf 6.7.
 
-Searches tuning_spec.SPEC's ~40 continuous knobs (main.py's own overlay
-constants + every revived overlays.py mechanism's thresholds/gates) to
-maximize a variance-penalized, trend-aware fitness against a diverse
-opponent pool, WITH a protected, heavily-weighted regression guard against
-the current baseline (main.py, i.e. the promoted 6.6/"v1" winner) -- see
-FITNESS below.
+Searches tuning_spec.SPEC's ~49 continuous knobs (main.py's own overlay
+constants + every revived overlays.py mechanism's thresholds/gates + v4's
+new per-item front-run enable gates) to maximize a variance-penalized,
+trend-aware fitness against a diverse opponent pool, WITH a protected,
+heavily-weighted regression guard against the current baseline (main.py) --
+see FITNESS below.
 
 Usage:
     python3 evolve.py                       # run indefinitely, checkpointing every generation
     python3 evolve.py --generations 50       # run a bounded number of generations (total, across restarts)
-    python3 evolve.py --resume               # continue from evolve_checkpoint_v3.json
+    python3 evolve.py --resume               # continue from evolve_checkpoint_v4.json
     python3 evolve.py --report               # print current best without running anything
-    nohup python3 -u evolve.py > evolve_v3.log 2>&1 &   # for real long-running background use
+    nohup python3 -u evolve.py > evolve_v4.log 2>&1 &   # for real long-running background use
+
+Why v4 (postmortem of v3, see TUNING_NOTES.md): two independent v3 runs
+(100+ generations each, one with a genuine IPOP restart) both converged to
+essentially the same fitness ceiling (~6,600-6,700) with the baseline delta
+hovering near zero -- a real signal that v3's 40-dim search space had been
+largely exhausted by round 1's original tuning, not a fluke of one run. A
+route re-survey (also in TUNING_NOTES.md) found nothing better than the
+current Filip Strzalka backbone either, so the route stays fixed. v4 widens
+the search space with the one concrete unexplored lever from the "next
+things" list: 9 new boolean gates (`fr_enabled_<ITEM>`) let CMA-ES fully
+EXCLUDE an item from front-running, not just deprioritize it -- previously
+every item was always front-run (only the ORDER was tunable). Default
+vector still reproduces the exact unconditional-front-run behavior every
+prior version used (all gates default ON).
 
 Why v3 (postmortem of round 2, see TUNING_NOTES.md):
 
@@ -79,11 +93,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import tuning_spec
 
-CHECKPOINT_PATH_DEFAULT = "evolve_checkpoint_v3.json"
+CHECKPOINT_PATH_DEFAULT = "evolve_checkpoint_v4.json"
 LAMBDA_VARIANCE = 0.35
 STAGNATION_WINDOW = 20
 NOISE_FLOOR = 100.0  # per-game $
-SEEDS_PER_MATCHUP = 2
+SEEDS_PER_MATCHUP = 3  # v4: bumped from 2 -- v3's false-positive candidate (looked +104/game in-loop, actually -214/game on real validation) came from a signal that was too noisy at the smaller sample
 BASELINE_FRACTION = 0.25  # target share of total games/candidate that are vs. the current baseline (main.py)
 REGRESSION_PENALTY_MULT = 1.0  # extra fitness subtracted (on top of the proportional share) if baseline_mean_delta < 0
 MIN_BASELINE_GAMES = 8
@@ -377,7 +391,7 @@ def main():
     diverse_games_per_cand = n_diverse * SEEDS_PER_MATCHUP * 2
     n_baseline_per_cand = _n_baseline_games(diverse_games_per_cand)
     total_games_per_cand = diverse_games_per_cand + n_baseline_per_cand
-    print(f"evolve.py v3: {tuning_spec.DIM} dims, workers={args.workers}, "
+    print(f"evolve.py v4: {tuning_spec.DIM} dims, workers={args.workers}, "
           f"diverse_opponents={n_diverse} ({[o['name'] for o in DIVERSE_OPPONENTS]}), "
           f"seeds/matchup={SEEDS_PER_MATCHUP}, diverse_games/candidate={diverse_games_per_cand}, "
           f"baseline_games/candidate={n_baseline_per_cand} (target {BASELINE_FRACTION:.0%} of signal), "
@@ -395,6 +409,16 @@ def main():
                 popsize = es.popsize  # remember the natural default so restarts can double it
 
             gen_this_leg = 0
+            # Leg-local record of best_fitness, reset on every restart -- the
+            # stagnation check below must only look back within the CURRENT
+            # leg. Using the global best_fitness_history directly was a real
+            # bug: right after a restart it's still full of pre-restart
+            # entries at the same (stagnant) value, so even ONE post-restart
+            # generation that doesn't beat the old record immediately
+            # re-triggers "no improvement in STAGNATION_WINDOW generations"
+            # -- observed burning through 2 of 3 restarts in a single
+            # generation each before this fix.
+            leg_best_history = []
             while not es.stop():
                 if args.generations is not None and generation >= args.generations:
                     print(f"Reached --generations {args.generations}, stopping.")
@@ -425,24 +449,27 @@ def main():
                     best_std_delta = result["std_deltas"][gen_best_idx]
                     best_baseline_mean_delta = result["baseline_means"][gen_best_idx]
                 best_fitness_history.append(best_fitness)
+                leg_best_history.append(best_fitness)
 
                 print(f"[gen {generation}] popsize={len(result['solutions_real'])} games={result['n_games']} "
                       f"elapsed={result['elapsed']:.1f}s  gen_best={gen_best_fitness:.1f}  "
                       f"overall_best={best_fitness:.1f} (mean={best_mean_delta:.1f} std={best_std_delta:.1f} "
                       f"baseline_mean={best_baseline_mean_delta:.1f})")
 
-                # Stagnation = the RUNNING RECORD (best_fitness_history) hasn't
-                # improved by more than NOISE_FLOOR over the window -- checking
-                # raw per-generation gen_best spread instead (v3's original
-                # approach) never fires in practice: per-generation noise from
-                # CMA-ES's own stochastic sampling routinely exceeds NOISE_FLOOR
-                # even at a genuine plateau, so a real 100-generation run with
-                # zero new records never triggered a single IPOP restart. This
+                # Stagnation = the RUNNING RECORD hasn't improved by more than
+                # NOISE_FLOOR over the window -- checking raw per-generation
+                # gen_best spread instead (v3's original approach) never
+                # fires in practice: per-generation noise from CMA-ES's own
+                # stochastic sampling routinely exceeds NOISE_FLOOR even at a
+                # genuine plateau, so a real 100-generation run with zero new
+                # records never triggered a single IPOP restart. This
                 # measures "has a new best been set recently", which is what
-                # "plateaued" actually means.
+                # "plateaued" actually means. Uses leg_best_history (reset on
+                # every restart), not the global best_fitness_history -- see
+                # the comment where it's initialized.
                 converged = False
-                if len(best_fitness_history) >= STAGNATION_WINDOW:
-                    if best_fitness - best_fitness_history[-STAGNATION_WINDOW] < NOISE_FLOOR:
+                if len(leg_best_history) >= STAGNATION_WINDOW:
+                    if best_fitness - leg_best_history[-STAGNATION_WINDOW] < NOISE_FLOOR:
                         converged = True
 
                 save_checkpoint(args.checkpoint, {
