@@ -155,7 +155,11 @@ _POOL_SIZE_OPTIMIZATION = 600
 _POOL_SIZE_OPTIMIZATION_BASELINE = 400
 _POOL_SIZE_VERIFICATION = 300
 _POOL_SIZE_VERIFICATION_BASELINE = 200
-_POOL_SIZE_PROMOTION = 200
+_POOL_SIZE_PROMOTION = 2000    # v7: was 200 -- a 40-game (or even 200-game) promotion check is not
+                               # enough to confidently call a candidate better than the baseline
+                               # (module docstring section 25/26); large enough that a real
+                               # generalization check (multiple hundred-game batches) never has to
+                               # silently truncate
 
 # -- IPOP restart defaults (module docstring #5, "kept") --
 RESTART_SIGMAS = [0.30, 0.45, 0.60]  # in the normalized [0,1] search cube; last value repeats if more restarts occur
@@ -882,6 +886,10 @@ def _promote_one_task(task):
 
 def promotion_benchmark(candidate_path, baseline_path="main.py", n_games=40, workers=None):
     import benchmark as bm
+    if n_games > len(_PROMOTION_SEED_POOL):
+        print(f"WARNING: --promote-games {n_games} exceeds the promotion seed pool "
+              f"({len(_PROMOTION_SEED_POOL)}) -- running only {len(_PROMOTION_SEED_POOL)} games, "
+              f"not silently fewer without saying so.")
     seeds = _PROMOTION_SEED_POOL[:max(2, n_games)]
     half = len(seeds) // 2
     jobs = [(seeds[i], True) for i in range(half)] + [(seeds[i], False) for i in range(half, len(seeds))]
@@ -1093,7 +1101,9 @@ def main():
     ap.add_argument("--promote", metavar="CANDIDATE.py",
                      help="Level C: run the promotion benchmark of CANDIDATE.py vs. --baseline, then exit")
     ap.add_argument("--baseline", default="main.py", help="--promote's baseline (default main.py)")
-    ap.add_argument("--promote-games", type=int, default=40)
+    ap.add_argument("--promote-games", type=int, default=500,
+                     help="v7: was 40 -- not enough games to confidently call a candidate better "
+                          "than the baseline (module docstring section 25/26)")
     ap.add_argument("--popsize", type=int, default=None)
     ap.add_argument("--max-restarts", type=int, default=3)
     ap.add_argument("--screening-opponents", type=int, default=SCREENING_OPPONENT_COUNT_DEFAULT)
@@ -1436,7 +1446,7 @@ def main():
     print(f"Checkpoint: {args.checkpoint}")
     print("Materialize a candidate to run the Level-C promotion benchmark with:")
     print(f"  python3 build_agent.py --from-checkpoint {args.checkpoint} --out /tmp/candidate.py")
-    print(f"  python3 evolve.py --promote /tmp/candidate.py --baseline main.py --promote-games 40")
+    print(f"  python3 evolve.py --promote /tmp/candidate.py --baseline main.py --promote-games 500")
 
 
 if __name__ == "__main__":
