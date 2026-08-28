@@ -386,3 +386,41 @@ money before the fix). Fixed by dropping the extra `_ACTIONS` argument.
 contribute" comparison in this project's memory or old commit messages was
 measuring against a broken baseline -- don't trust the specific numbers,
 only the fixed version going forward.
+
+## Route re-survey (2026-08-24): ladder reshuffled, still no win
+
+One day after the 2026-08-23 re-survey, re-checked the CURRENT top-of-leaderboard
+for a stronger clonable route. The roster changed meaningfully: 9 of the top 20
+names weren't in the prior 22-player survey (junseok lee #4, Say My Name ? #6,
+Yizuki #11, test_money #13, Kazama Yusuke #14, satoooh #15, Ömer Faruk Yüce #16,
+Ueddy #17, Egor Trushin #18), and Filip Strzalka (the current backbone donor)
+dropped off the visible top 20 entirely.
+
+Investigated 7 of the 9 (BFS discovery from our own submission hit Kaggle API
+rate limits within 3 hops for `Kazama Yusuke`, `Yizuki`, and re-resolving
+`Filip Strzalka` himself -- not chased further, worth a follow-up if throttling
+clears). Self-consistency on real replays:
+
+- junseok lee 71.7%/91.2% (unusually asymmetric between seats), Say My Name ?
+  74.4%/81.1%, Ömer Faruk Yüce 77.2%/75.9%, Ueddy 90.1%/87.2%, Egor Trushin
+  93.3%/93.5% -- all too adaptive to clone, same pattern as most top-ranked
+  players historically.
+- **satoooh** and **test_money** qualified (~99%/99%), re-checked on a deepened
+  sample (satoooh n=18/17, test_money n=21/14 both seats) specifically to rule
+  out the Kobe BRYANT-style thin-sample false positive -- held at 99.2-99.3%
+  both seats, genuinely scripted.
+
+Head-to-head vs. the current backbone (`benchmark_vs_player.py --candidate
+main.py`, replaying each player's own real recorded actions, 70 games/seat):
+- satoooh: main.py wins 70/70, +15,930/game
+- test_money: main.py wins 70/70, +16,122/game
+
+Both lose as decisively as mandgeee/u did on 2026-08-23 (-16,524/-15,799/game).
+**Same structural finding holds one day later**: the most self-consistent/
+clonable players sit lower on this ladder and lose decisively to Filip's route;
+no basis to swap the backbone right now.
+**How to apply**: don't re-run this survey again on a whim -- only worth
+repeating if `Kazama Yusuke`/`Yizuki` become resolvable (rate-limited this
+round) or if the top-of-leaderboard roster shows another significant reshuffle.
+The real lever for a route-quality jump is still `train.py`/`model.py`'s
+dormant PPO pipeline, not more mining (per the 2026-08-23 note above).

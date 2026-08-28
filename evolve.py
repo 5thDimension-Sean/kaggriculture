@@ -82,6 +82,8 @@ Usage (unchanged surface):
     python3 evolve.py                       # run indefinitely, checkpointing every generation
     python3 evolve.py --generations 50       # bounded run (counts across restarts)
     python3 evolve.py --resume               # continue from evolve_checkpoint_v6.json
+    python3 evolve.py --seed-from OTHER.json # fresh run (gen 0), x0 warm-started from OTHER.json's
+                                              # best_verified_params instead of tuning_spec defaults
     python3 evolve.py --report               # print current best without running anything
     python3 evolve.py --dry-run              # print the derived config/game-budget, run nothing
     python3 evolve.py --promote CAND.py      # Level C: rigorous benchmark of CAND.py vs. main.py
@@ -92,7 +94,12 @@ need source edits -- see main()'s argparse block for the full list):
     --screening-opponents, --screening-seeds, --survivor-fraction,
     --finalists, --verification-seeds, --seed-batch-generations,
     --baseline-tolerance, --staged-params, --sensitivity-every,
-    --screening-baseline-seeds, --baseline-weight (v7)
+    --screening-baseline-seeds, --baseline-weight (v7),
+    --seed-from, --seed-sigma0 (warm start a fresh run from a known-good point --
+    e.g. a prior version's verified params -- instead of always restarting the
+    search from tuning_spec.default_vector(); useful after a backbone route swap
+    where the overlay/reserve tuning is still a reasonable starting guess even
+    though the route itself changed)
 
 Opponent pool, worker architecture, and the fast-deepcopy patch are
 unchanged from v5 -- see their own docstrings/comments below.
@@ -1096,6 +1103,18 @@ def main():
     ap.add_argument("--workers", type=int, default=max(1, mp.cpu_count() - 4))
     ap.add_argument("--checkpoint", default=CHECKPOINT_PATH_DEFAULT)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--seed-from", metavar="CHECKPOINT.json",
+                     help="Warm-start x0 from another checkpoint's best_verified_params "
+                          "(falls back to best_params if unverified) instead of "
+                          "tuning_spec.default_vector(). Unlike --resume, this starts a FRESH run "
+                          "-- generation/restart counters and fitness history reset to zero, only "
+                          "the CMA-ES starting point moves. Use this to start a new search (e.g. "
+                          "after a backbone route swap) from a known-good point instead of from "
+                          "scratch. Ignored if --resume is set (resume already has its own x0).")
+    ap.add_argument("--seed-sigma0", type=float, default=None,
+                     help="sigma0 for --seed-from (default 0.2, same as a from-scratch run). "
+                          "Since --seed-from already starts near a good point, a smaller value "
+                          "(e.g. 0.1) searches locally instead of re-exploring the full range.")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--promote", metavar="CANDIDATE.py",
@@ -1174,17 +1193,35 @@ def main():
               f"restarts_used={restarts_used}"
               + (f", best_verified_fitness={best_verified_fitness:.1f}" if best_verified_fitness is not None else ""))
     else:
-        x0_norm = _to_normalized(tuning_spec.default_vector())
+        if args.seed_from:
+            seed_ckpt = load_checkpoint(args.seed_from)
+            if seed_ckpt is None:
+                raise SystemExit(f"--seed-from {args.seed_from}: file not found")
+            old_names = seed_ckpt.get("param_names", tuning_spec.NAMES)
+            seed_verified = seed_ckpt.get("best_verified_params")
+            raw_seed = seed_verified or seed_ckpt["best_params"]
+            if old_names == tuning_spec.NAMES:
+                seed_params = raw_seed
+            else:
+                seed_params, _ = tuning_spec.remap_checkpoint_vector(old_names, raw_seed)
+            x0_norm = _to_normalized(seed_params)
+            best_opt_params = seed_params
+            print(f"Seeding x0 from {args.seed_from} "
+                  f"({'best_verified_params' if seed_verified else 'best_params (NOT Level-B verified)'}, "
+                  f"generation {seed_ckpt.get('generation', '?')}) -- generation/restart counters "
+                  f"and fitness history still start fresh.")
+        else:
+            x0_norm = _to_normalized(tuning_spec.default_vector())
+            best_opt_params = tuning_spec.default_vector()
         fitness_history = []
         best_fitness_history = []
         generation = 0
         best_opt_fitness = float("-inf")
-        best_opt_params = tuning_spec.default_vector()
         best_opt_score = {"diverse_mean": 0.0, "diverse_std": 0.0, "baseline_mean": 0.0}
         best_verified_fitness = None
         best_verified_params = None
         best_verified_score = {}
-        sigma0 = 0.2
+        sigma0 = args.seed_sigma0 if args.seed_sigma0 is not None else 0.2
         restarts_used = 0
         base_popsize = args.popsize
         opponent_stats = {}

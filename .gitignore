@@ -13,4 +13,6 @@ evolve_checkpoint*.json
 final_benchmark*.log
 vs_*.log
 routes_6_6/
+hc.md
+*.json
 routes_6_7/
