@@ -1,6 +1,8 @@
-"""make_submission.py -- Produce a SINGLE, self-contained submission .py by
-inlining overlays.py's source into main.py, so the actual Kaggle artifact
-never relies on `import overlays` finding a sibling file at grading time.
+"""Build a single-file MapleLeaf submission and exercise Kaggle's loader.
+
+``main.py`` imports ``heuristics.py`` for readable local development. The
+submitted artifact embeds that module in memory, so Kaggle only needs one
+root-level ``main.py`` and the grading sandbox never has to resolve siblings.
 
 Why this exists (2026-08-22): MapleLeaf 6.6 was the first version to split
 logic across two files (main.py + overlays.py, joined by `import overlays`).
@@ -22,9 +24,7 @@ as before for local dev, evolve.py, build_agent.py, benchmark.py, etc. --
 this script only affects what gets packaged for the actual Kaggle upload.
 
 Usage:
-    python3 make_submission.py --out /tmp/submission_main.py
-    tar czf submissions/submission_v6_7.tar.gz -C /tmp submission_main.py \\
-        --transform 's/^submission_main.py$/main.py/'
+    python -m tools.build_submission --out artifacts/submission/main.py
 """
 
 import argparse
@@ -33,30 +33,50 @@ import os
 import sys
 import zlib
 
-_ROOT = os.path.dirname(os.path.abspath(__file__))
-_IMPORT_LINE = "import overlays\n"
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_IMPORT_LINE = "import heuristics\n"
+_ANTI_IMPORT_LINE = "import anti_route\n"
 
 
-def build_merged_source(root=_ROOT):
-    with open(os.path.join(root, "main.py")) as f:
+def build_merged_source(root=_ROOT, main_path=None):
+    main_path = main_path or os.path.join(root, "main.py")
+    with open(main_path) as f:
         main_src = f.read()
-    with open(os.path.join(root, "overlays.py")) as f:
-        overlays_src = f.read()
+    with open(os.path.join(root, "heuristics.py")) as f:
+        heuristics_src = f.read()
+    with open(os.path.join(root, "anti_route.py")) as f:
+        anti_route_src = f.read()
 
     if main_src.count(_IMPORT_LINE) != 1:
         raise SystemExit(
             f"Expected exactly one '{_IMPORT_LINE.strip()}' line in main.py, "
-            f"found {main_src.count(_IMPORT_LINE)} -- update make_submission.py"
+            f"found {main_src.count(_IMPORT_LINE)} -- update tools/build_submission.py"
+        )
+    if main_src.count(_ANTI_IMPORT_LINE) > 1:
+        raise SystemExit(
+            f"Expected at most one '{_ANTI_IMPORT_LINE.strip()}' line in main.py, "
+            f"found {main_src.count(_ANTI_IMPORT_LINE)} -- update tools/build_submission.py"
         )
 
-    encoded = base64.b85encode(zlib.compress(overlays_src.encode("utf-8"), level=9)).decode("ascii")
+    encoded = base64.b85encode(zlib.compress(heuristics_src.encode("utf-8"), level=9)).decode("ascii")
     inline = (
         "import base64 as _sub_b64, types as _sub_types, zlib as _sub_zlib\n"
-        f"_OVERLAYS_SRC = _sub_zlib.decompress(_sub_b64.b85decode({encoded!r})).decode('utf-8')\n"
-        "overlays = _sub_types.ModuleType('overlays')\n"
-        "exec(compile(_OVERLAYS_SRC, 'overlays.py', 'exec'), overlays.__dict__)\n"
+        f"_HEURISTICS_SRC = _sub_zlib.decompress(_sub_b64.b85decode({encoded!r})).decode('utf-8')\n"
+        "heuristics = _sub_types.ModuleType('heuristics')\n"
+        "exec(compile(_HEURISTICS_SRC, 'heuristics.py', 'exec'), heuristics.__dict__)\n"
     )
-    return main_src.replace(_IMPORT_LINE, inline, 1)
+    anti_encoded = base64.b85encode(
+        zlib.compress(anti_route_src.encode("utf-8"), level=9)
+    ).decode("ascii")
+    anti_inline = (
+        f"_ANTI_ROUTE_SRC = _sub_zlib.decompress(_sub_b64.b85decode({anti_encoded!r})).decode('utf-8')\n"
+        "anti_route = _sub_types.ModuleType('anti_route')\n"
+        "exec(compile(_ANTI_ROUTE_SRC, 'anti_route.py', 'exec'), anti_route.__dict__)\n"
+    )
+    merged = main_src.replace(_IMPORT_LINE, inline, 1)
+    if _ANTI_IMPORT_LINE in merged:
+        merged = merged.replace(_ANTI_IMPORT_LINE, anti_inline, 1)
+    return merged
 
 
 def self_test(out_path):
@@ -87,12 +107,13 @@ def self_test(out_path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="/tmp/submission_main.py")
+    ap.add_argument("--out", default=os.path.join(_ROOT, "artifacts", "submission", "main.py"))
     ap.add_argument("--skip-self-test", action="store_true")
     args = ap.parse_args()
 
     merged = build_merged_source()
-    with open(args.out, "w") as f:
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w", encoding="utf-8", newline="\n") as f:
         f.write(merged)
     print(f"Wrote self-contained submission agent -> {args.out} ({len(merged)} bytes)")
 

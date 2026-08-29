@@ -67,13 +67,18 @@ def make_agent_py(encoded, episode_id, player, score, template_path="4_5.py"):
         src = f.read()
 
     import re
-    old_actions_pattern = r"(_ACTIONS\s*=\s*json\.loads\(zlib\.decompress\(base64\.b85decode\(\s*\n?\s*'[^']+'\s*\n?\s*\)\s*\)\s*\))"
+    # The action tape is deliberately kept on one line in the production
+    # source. Replace that complete assignment instead of coupling this tool
+    # to the exact decode/parenthesis formatting used by a particular version.
     new_actions = (
-        f"_ACTIONS = json.loads(zlib.decompress(base64.b85decode(\n"
-        f"    '{encoded}'\n"
-        f")))"
+        "_ACTIONS = json.loads(zlib.decompress(base64.b85decode("
+        f"{encoded!r})).decode('utf-8'))"
     )
-    new_src = re.sub(old_actions_pattern, new_actions, src, count=1)
+    new_src, replacement_count = re.subn(
+        r"^_ACTIONS\s*=.*$", new_actions, src, count=1, flags=re.MULTILINE
+    )
+    if replacement_count != 1:
+        raise ValueError("template must contain exactly one one-line _ACTIONS assignment")
 
     # Update the docstring header — works for any MapleLeaf version
     new_src = re.sub(
@@ -137,6 +142,8 @@ def main():
     ap.add_argument("--games", type=int, default=10,    help="Games per route benchmark")
     ap.add_argument("--vs",    default="4_5.py",         help="Baseline agent to beat")
     ap.add_argument("--out",   default="routes",         help="Output folder")
+    ap.add_argument("--team",  default="",               help="Only extract the named team's seat from each replay")
+    ap.add_argument("--skip-benchmark", action="store_true", help="Only generate route agents")
     args = ap.parse_args()
 
     replay_dir = args.dir
@@ -147,7 +154,15 @@ def main():
     all_candidates = []
     for fpath in sorted(glob.glob(os.path.join(replay_dir, "*.json"))):
         try:
-            for player, score, actions in extract_routes_from_episode(fpath):
+            routes = extract_routes_from_episode(fpath)
+            if args.team:
+                with open(fpath) as handle:
+                    team_names = json.load(handle).get("info", {}).get("TeamNames", [])
+                if args.team not in team_names:
+                    continue
+                team_seat = team_names.index(args.team)
+                routes = [route for route in routes if route[0] == team_seat]
+            for player, score, actions in routes:
                 ep_id = os.path.basename(fpath).replace(".json", "")
                 all_candidates.append((score, ep_id, player, fpath, actions))
         except Exception as e:
@@ -178,9 +193,13 @@ def main():
         with open(out_path, "w") as f:
             f.write(py_src)
         route_files.append((rank, score, ep_id, player, out_path))
-        print(f"  [{rank:02d}] ep={ep_id} P{player} score={score:,.0f}  →  {out_path}")
+        print(f"  [{rank:02d}] ep={ep_id} P{player} score={score:,.0f}  ->  {out_path}")
 
     print()
+
+    if args.skip_benchmark:
+        print(f"Generated {len(route_files)} route agents in {args.out}")
+        return
 
     # ── Step 3: Benchmark each route against the baseline ────────────────────
     results = []
@@ -202,10 +221,10 @@ def main():
     results.sort(reverse=True)
     best_delta, best_wins, best_mean, best_rank, best_ep, best_player, best_path = results[0]
 
-    print(f"\n{'═'*62}")
+    print(f"\n{'='*62}")
     print(f"  WINNER: rank={best_rank}  ep={best_ep}  P{best_player}")
     print(f"  mean={best_mean:,.0f}  delta vs {args.vs}: {'+' if best_delta>=0 else ''}{best_delta:,.0f}")
-    print(f"{'═'*62}")
+    print(f"{'='*62}")
 
     import shutil
     best_out = os.path.join(args.out, "best_route.py")

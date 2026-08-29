@@ -2,12 +2,10 @@
 benchmark.py — Head-to-head benchmarker for Kaggriculture agents.
 
 Usage:
-    python benchmark.py                              # main.py vs models/5_0.py
-    python benchmark.py --a main.py --b models/5_0.py
-    python benchmark.py --a main.py --b route-only  # vs bare route (no market logic)
-    python benchmark.py --b "replay:training data v3/91385999.json:0"  # vs a real
-                                                      # recorded episode's exact actions
-    python benchmark.py --n 40                       # run 40 games
+    python -m tools.benchmark
+    python -m tools.benchmark --a main.py --b opponents/mapleleaf_6_7.py
+    python -m tools.benchmark --b route-only
+    python -m tools.benchmark --n 40
 
 Each run plays N//2 games with agent A as P0, N//2 games with agent A as P1.
 
@@ -44,7 +42,8 @@ import os
 import sys
 import textwrap
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _PROJECT_ROOT)
 
 _KNOWN_GOOD_VERSION = "1.32.7"  # confirmed live 2026-08-22 via a fresh episode's module_version field
 
@@ -159,9 +158,9 @@ def benchmark(agent_a, agent_b, name_a, name_b, n_games=20):
     scores_a = []
     scores_b = []
 
-    print(f"\n{'─'*62}")
+    print(f"\n{'-'*62}")
     print(f"  {name_a:25s}  vs  {name_b}")
-    print(f"{'─'*62}")
+    print(f"{'-'*62}")
 
     print(f"\n  [{name_a} as P0]")
     for i, seed in enumerate(seeds_p0):
@@ -171,7 +170,7 @@ def benchmark(agent_a, agent_b, name_a, name_b, n_games=20):
         elif sb > sa: wins_b += 1; tag = f"{name_b} WIN"
         else:         ties   += 1; tag = "TIE"
         print(f"    game {i+1:2d} (seed={seed}): "
-              f"{name_a}={sa:>8,.0f}  {name_b}={sb:>8,.0f}  → {tag}")
+              f"{name_a}={sa:>8,.0f}  {name_b}={sb:>8,.0f}  -> {tag}")
 
     print(f"\n  [{name_a} as P1]")
     for i, seed in enumerate(seeds_p1):
@@ -181,19 +180,19 @@ def benchmark(agent_a, agent_b, name_a, name_b, n_games=20):
         elif sb > sa: wins_b += 1; tag = f"{name_b} WIN"
         else:         ties   += 1; tag = "TIE"
         print(f"    game {i+1:2d} (seed={seed}): "
-              f"{name_a}={sa:>8,.0f}  {name_b}={sb:>8,.0f}  → {tag}")
+              f"{name_a}={sa:>8,.0f}  {name_b}={sb:>8,.0f}  -> {tag}")
 
     total  = wins_a + wins_b + ties
     mean_a = sum(scores_a) / len(scores_a)
     mean_b = sum(scores_b) / len(scores_b)
     delta  = mean_a - mean_b
 
-    print(f"\n{'═'*62}")
+    print(f"\n{'='*62}")
     print(f"  RESULTS ({total} games)")
     print(f"  {name_a:25s}  wins: {wins_a}/{total}  mean: {mean_a:>8,.0f}")
     print(f"  {name_b:25s}  wins: {wins_b}/{total}  mean: {mean_b:>8,.0f}")
     print(f"  delta (A - B):               {delta:>+9,.0f} per game")
-    print(f"{'═'*62}\n")
+    print(f"{'='*62}\n")
 
     return wins_a, wins_b, ties, mean_a, mean_b
 
@@ -218,7 +217,7 @@ def sanity_check(agent, name):
         import numpy as np
         print(f"[sanity] _NET W1 norm: {float(__import__('numpy').linalg.norm(net.W1)):.2f}")
     else:
-        print("[sanity] (no _NET — route-replay agent)")
+        print("[sanity] (no _NET - heuristic route agent)")
 
     env = make("kaggriculture", configuration={"episodeSteps": 4}, debug=False)
     results = []
@@ -261,23 +260,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             Examples:
-              python benchmark.py                              # main.py vs models/5_0.py
-              python benchmark.py --b route-only              # vs bare route (measures market logic)
-              python benchmark.py --a models/5_1.py --b models/5_0.py
-              python benchmark.py --b "replay:training data v3/91385999.json:0"
-                                                                # vs a real recorded episode
-              python benchmark.py --n 40
+              python -m tools.benchmark
+              python -m tools.benchmark --b route-only
+              python -m tools.benchmark --n 40
         """),
     )
     ap.add_argument("--a", default="main.py",         help="Agent A: path, 'route-only', or 'replay:<json>:<player>' (default: main.py)")
-    ap.add_argument("--b", default="models/5_0.py",   help="Agent B: path, 'route-only', or 'replay:<json>:<player>' (default: models/5_0.py)")
+    ap.add_argument("--b", default="opponents/mapleleaf_6_7.py", help="Agent B: path, 'route-only', or 'replay:<json>:<player>'")
     ap.add_argument("--n", type=int, default=20,       help="Total games, must be even (default: 20)")
     args = ap.parse_args()
 
     if args.n % 2 != 0:
         sys.exit("--n must be even")
 
-    project_root = os.path.dirname(os.path.abspath(__file__))
+    project_root = _PROJECT_ROOT
     route_only_source = args.a if os.path.isabs(args.a) else os.path.join(project_root, args.a)
 
     print(f"Loading agents...")

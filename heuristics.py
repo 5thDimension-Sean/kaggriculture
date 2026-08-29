@@ -1,4 +1,12 @@
-"""overlays.py -- Market-intelligence overlays revived from MapleLeaf 6.3
+"""Observation-driven market and safety heuristics for MapleLeaf 6.8.
+
+The route tape in ``main.py`` supplies a strong production schedule. This
+module handles the parts that genuinely depend on the live game: weeds,
+opponent exposure, market impact, inventory pressure, premium-sale timing,
+and end-of-season recovery. ``tuning/space.py`` exposes only a compact subset
+of these thresholds to CMA-ES; the policy remains heuristic-first.
+
+Historical note: this module began as ``overlays.py`` and was revived from MapleLeaf 6.3
 (git commit 5f69c92), ported to run on top of whatever backbone route 6.6
 adopts. Deleted wholesale in the 6.4 rewrite on the assumption the new route
 didn't need them; never re-tested against the new route until now.
@@ -8,7 +16,7 @@ original -- these are intricate, already-validated mechanisms, and the
 lowest-risk way to make them tunable is to keep their logic exactly as
 written and only externalize the ALL-CAPS constants). Every tunable knob
 lives in DEFAULT_PARAMS; call configure(params) once per process/game-batch
-before use to patch them in (see tuning_spec.py / evolve.py). A "params"
+before use to patch them in (see tuning/space.py). A "params"
 value that reproduces DEFAULT_PARAMS reproduces 6.3's original behavior
 exactly (modulo running on a different backbone route).
 
@@ -88,6 +96,7 @@ DEFAULT_PARAMS = {
     # terminal liquidation
     "terminal_soft_start": 706,
     "terminal_hard_start": 708,
+    "terminal_controller_start": 717,
 
     # sell-slot ranking (impact-score) / demand-urgency weight
     "rank_sell_slots_enabled": 1.0,
@@ -170,7 +179,7 @@ def market_price(item, inventory, params=None):
 
 def _verify_against_live_engine():
     """DEV-ONLY drift check -- never called at import or agent runtime.
-    Run manually (`python3 -c "import overlays; overlays._verify_against_live_engine()"`)
+    Run manually (`py -c "import heuristics; heuristics._verify_against_live_engine()"`)
     after any kaggle_environments upgrade to confirm this hand-copy hasn't
     gone stale. Safe to fail/skip: only touches the live package when
     explicitly invoked, never as a side effect of importing this module."""
@@ -182,7 +191,7 @@ def _verify_against_live_engine():
     for item in MARKET_PARAMS:
         for inv in (0, 50, MARKET_I0 // 2, MARKET_I0, MARKET_I0 * 2, MARKET_I0 * 5):
             assert _engine.market_price(item, inv) == market_price(item, inv), (item, inv)
-    print("overlays.py market model matches the installed kaggle_environments engine exactly.")
+    print("heuristics.py market model matches the installed kaggle_environments engine exactly.")
 
 
 _PRICE_FLOOR = PRICE_FLOOR

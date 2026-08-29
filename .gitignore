@@ -1,18 +1,17 @@
 __pycache__/
 *.pyc
-model_score*
-IMPROVEMENTS.md
-myreplay/
-.venv_1326/
-top-players-data/
-training data v4/
-shivi-data/
-mapleleaf_6_2.zip
-evolve*.log
-evolve_checkpoint*.json
-final_benchmark*.log
-vs_*.log
-routes_6_6/
-hc.md
+.venv/
+.venv_*/
+
+# Generated tuning, submission, replay, and benchmark outputs.
+artifacts/*
+!artifacts/reference/
+!artifacts/reference/submission_v6_7.tar.gz
+*.log
+
+# Kaggle API/replay working sets are intentionally local.
 *.json
-routes_6_7/
+top-players-data/
+myreplay/
+replays/
+routes_*/
