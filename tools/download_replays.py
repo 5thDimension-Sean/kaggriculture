@@ -34,6 +34,7 @@ def discover(seed_submission_id, target_names, max_hops=3, breadth_cap=60, sleep
     target_names member found, plus the full discovered name->submission map."""
     from kaggle.api.kaggle_api_extended import KaggleApi
     api = KaggleApi()
+    api.authenticate()
 
     targets = set(target_names)
     visited = set()
@@ -76,6 +77,7 @@ def fetch_replays(manifest, out_dir, per_player=20, sleep=0.1):
     """
     from kaggle.api.kaggle_api_extended import KaggleApi
     api = KaggleApi()
+    api.authenticate()
 
     os.makedirs(out_dir, exist_ok=True)
     summary = {}
@@ -107,7 +109,22 @@ def fetch_replays(manifest, out_dir, per_player=20, sleep=0.1):
                     print(f"  [{name}] episode {ep.id} download failed: {e}")
                     continue
                 time.sleep(sleep)
-            seat_manifest.append({"episode_id": ep.id, "seat": seat, "create_time": str(ep.create_time)})
+            replay_path = os.path.join(player_dir, f"episode-{ep.id}-replay.json")
+            seed = None
+            try:
+                with open(replay_path, encoding="utf-8") as replay_file:
+                    replay = json.load(replay_file)
+                seed = replay.get("info", {}).get("seed")
+                if seed is None:
+                    seed = replay.get("configuration", {}).get("seed")
+            except (OSError, ValueError):
+                pass
+            seat_manifest.append({
+                "episode_id": ep.id,
+                "seat": seat,
+                "seed": seed,
+                "create_time": str(ep.create_time),
+            })
 
         with open(os.path.join(player_dir, "manifest.json"), "w") as f:
             json.dump(seat_manifest, f, indent=2)

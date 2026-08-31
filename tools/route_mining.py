@@ -70,8 +70,10 @@ def load_player_games(player_dir):
                 actions.append(_clean_action(step[seat].get("action")))
             else:
                 actions.append(_clean_action(None))
-        # Strip the leading bootstrap PASS step (matches extract_routes.py convention)
-        while actions and actions[0]["farmer"] == ["PASS"] and not actions[0]["hands"] and not actions[0]["market"]:
+        # Strip exactly one replay bootstrap entry. A second empty PASS can be
+        # the player's intentional step-0 action (notably in current MtN and
+        # Driz Lo routes) and must remain on the tape.
+        if actions and actions[0]["farmer"] == ["PASS"] and not actions[0]["hands"] and not actions[0]["market"]:
             actions = actions[1:]
         if len(actions) >= 100:
             games_by_seat[seat].append({"episode_id": ep_id, "actions": actions})

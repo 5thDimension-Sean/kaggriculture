@@ -38,30 +38,46 @@ def _play(task):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidates", required=True, help="Glob for candidate Python files")
-    parser.add_argument("--player-dir", required=True)
+    parser.add_argument(
+        "--player-dir",
+        action="append",
+        required=True,
+        help="Replay directory; repeat to score candidates against several players",
+    )
     parser.add_argument("--episode-id", type=int, help="Evaluate only one replay episode")
+    parser.add_argument(
+        "--limit-per-player",
+        type=int,
+        default=0,
+        help="Use only the first N manifest entries from each replay directory",
+    )
     parser.add_argument("--workers", type=int, default=max(1, mp.cpu_count() - 2))
     args = parser.parse_args()
 
     candidates = sorted(os.path.abspath(path) for path in glob.glob(args.candidates))
     if not candidates:
         raise SystemExit(f"no candidates matched {args.candidates!r}")
-    with open(os.path.join(args.player_dir, "manifest.json"), encoding="utf-8") as handle:
-        manifest = json.load(handle)
-    if args.episode_id is not None:
-        manifest = [entry for entry in manifest if int(entry["episode_id"]) == args.episode_id]
-
     tasks = []
     for candidate_path in candidates:
-        for entry in manifest:
-            episode_path = os.path.abspath(os.path.join(
-                args.player_dir, f"episode-{entry['episode_id']}-replay.json"
-            ))
-            if not os.path.exists(episode_path):
-                continue
-            seed = int(entry["seed"])
-            tasks.append((candidate_path, episode_path, int(entry["seat"]), seed, True))
-            tasks.append((candidate_path, episode_path, int(entry["seat"]), seed, False))
+        for player_dir in args.player_dir:
+            with open(os.path.join(player_dir, "manifest.json"), encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            if args.episode_id is not None:
+                manifest = [
+                    entry for entry in manifest
+                    if int(entry["episode_id"]) == args.episode_id
+                ]
+            if args.limit_per_player:
+                manifest = manifest[: args.limit_per_player]
+            for entry in manifest:
+                episode_path = os.path.abspath(os.path.join(
+                    player_dir, f"episode-{entry['episode_id']}-replay.json"
+                ))
+                if not os.path.exists(episode_path):
+                    continue
+                seed = int(entry["seed"])
+                tasks.append((candidate_path, episode_path, int(entry["seat"]), seed, True))
+                tasks.append((candidate_path, episode_path, int(entry["seat"]), seed, False))
 
     grouped = {path: [] for path in candidates}
     print(f"Running {len(tasks)} exact-seed games for {len(candidates)} candidates...")

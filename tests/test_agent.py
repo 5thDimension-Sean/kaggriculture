@@ -4,8 +4,6 @@ import unittest
 
 import main
 from tools import benchmark, build_submission
-from tuning import space
-from tuning.build_candidate import make_agent, write_candidate
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -13,20 +11,22 @@ REFERENCE_67 = os.path.join(PROJECT_ROOT, "opponents", "mapleleaf_6_7.py")
 
 
 class AgentTests(unittest.TestCase):
-    def test_version_is_7_2(self):
-        self.assertEqual(main.__version__, "mapleleaf-7.2-heuristic-cma-lite")
+    def test_version_is_aether_1(self):
+        self.assertEqual(main.__version__, "aether-1.0-route-fusion")
 
-    def test_default_candidate_matches_main(self):
-        candidate = make_agent(space.default_vector())
-        reference_a = benchmark.load_agent(REFERENCE_67)
-        reference_b = benchmark.load_agent(REFERENCE_67)
-        candidate_scores = benchmark.run_game(candidate, reference_a, 6_800_013)
-        main_scores = benchmark.run_game(main.agent, reference_b, 6_800_013)
-        self.assertEqual(candidate_scores, main_scores)
+    def test_public_route_fingerprint(self):
+        def observation(wool, milk):
+            return {"market": {"inventory": {"WOOL": wool, "MILK": milk}}}
 
-    def test_standalone_candidate_loads_by_file_path(self):
+        self.assertEqual(main._public_route_mode(observation(9995, 9999)), "animal_pressure")
+        self.assertEqual(main._public_route_mode(observation(9999, 9995)), "dairy_pressure")
+        self.assertEqual(main._public_route_mode(observation(9999, 9999)), "crop_pressure")
+
+    def test_generated_submission_loads_by_file_path(self):
         with tempfile.TemporaryDirectory() as directory:
-            output = write_candidate(space.default_vector(), os.path.join(directory, "main.py"))
+            output = os.path.join(directory, "main.py")
+            with open(output, "w", encoding="utf-8") as handle:
+                handle.write(build_submission.build_merged_source())
             build_submission.self_test(output)
 
     def test_full_episode_reaches_done(self):
@@ -34,7 +34,7 @@ class AgentTests(unittest.TestCase):
 
         env = make(
             "kaggriculture",
-            configuration={"episodeSteps": 720, "seed": 6_800_068},
+            configuration={"episodeSteps": 720, "seed": 1_000_073},
             debug=True,
         )
         env.run([main.agent, benchmark.load_agent(REFERENCE_67)])

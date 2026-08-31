@@ -115,7 +115,7 @@ def make_replay_agent(episode_path, player_index):
     # obs["step"]. Strip it so actions[step] lines up with the step at which
     # it was ACTUALLY submitted (matches the convention main.py's own
     # extracted _ACTIONS_P0/_ACTIONS_P1 already use — see extract_routes.py).
-    while actions and actions[0]["farmer"] == ["PASS"] and not actions[0]["hands"] and not actions[0]["market"]:
+    if actions and actions[0]["farmer"] == ["PASS"] and not actions[0]["hands"] and not actions[0]["market"]:
         actions = actions[1:]
 
     def replay_agent(obs, configuration=None):

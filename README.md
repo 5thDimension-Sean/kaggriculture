@@ -1,83 +1,42 @@
-# MapleLeaf 7.2
+# Aether 1.0
 
-MapleLeaf is a heuristic-first agent for Kaggle's
-[Kaggriculture](https://www.kaggle.com/competitions/kaggriculture) simulation.
-Version 7.2 keeps a strong deterministic production route, then reacts to the
-live observation where the opponent and environment actually change value:
-weed recovery, premium-market timing, sell-order impact, opponent production,
-shed pressure, terminal liquidation, and public-opening route selection.
+Aether is a full rewrite of the Kaggriculture agent around public replay
+behavior from the current leaderboard leaders: tetsuya, Driz Lo, and MtN.
+It does not identify players or use hidden state.
 
-CMA-ES is deliberately small. It tunes 16 readable thresholds around the
-hand-written policy; it does not search the route or choose among dozens of
-on/off overlays.
+## Policy
+
+- Seat 0 uses tetsuya's production geometry and forks at the first day
+  boundary from public market inventory.
+- `WOOL <= 9995` selects the animal-pressure branch. This exact boundary
+  separated the sampled Driz Lo and MtN seat-0 route families.
+- Otherwise `MILK <= 9995` selects tetsuya's melon-heavy dairy-pressure
+  branch; the remaining state selects its strawberry-heavy crop branch.
+- Seat 1 uses a per-action majority reconstruction of MtN's four public
+  games. That route measured 99.2% self-consistency.
+- A per-worker delay tracker repairs route-breaking weeds without shifting
+  every other worker's schedule.
+
+The evidence and limitations are in
+[`docs/aether-1.0-research.md`](docs/aether-1.0-research.md).
 
 ## Layout
 
-- `main.py` — Kaggle entry point, shared opening, and adaptive route selector
-- `anti_route.py` — compressed anti–Crop Dusta production tape
-- `heuristics.py` — observation-driven safety and market policy
-- `tuning/` — compact search space, CMA-ES runner, and candidate builder
-- `tools/` — packaging, benchmarks, and replay analysis
-- `tests/` — loader, full-episode, isolation, and tuning regressions
-- `docs/` — research notes, rules, and tuning protocol
-- `opponents/mapleleaf_6_7.py` — immutable promotion baseline
-- `artifacts/reference/` — the original 6.7 submission archive
+- `main.py` — Aether runtime and public-state route selector
+- `aether_routes.py` — generated, compressed route library
+- `tools/build_aether_routes.py` — reproducible route generator
+- `tools/analyze_top_routes.py` — route divergence and threshold analysis
+- `tools/build_submission.py` — single-file package builder and loader test
+- `tests/` — branch, loader, and full-episode regression tests
 
-Historical experiments, raw replay corpora, obsolete PPO code, and old
-submission bundles remain recoverable from Git history but are not part of the
-active 7.2 tree.
-
-## Setup
-
-```powershell
-py -m pip install -r requirements-dev.txt
-```
-
-The submission itself uses only Python's standard library.
-
-## Validate
+## Validate and package
 
 ```powershell
 py -m unittest discover -s tests -v
-py -m tools.benchmark --n 20
+py -m tools.benchmark --a main.py --b opponents/mapleleaf_6_7.py --n 10
 py -m tools.build_submission --out artifacts/submission/main.py
+tar -czf artifacts/aether-1.0.tar.gz -C artifacts/submission main.py
 ```
 
-The submission builder exercises the same file-path loading mechanism used by
-Kaggle Environments. This catches failures that direct Python imports miss.
-
-## Tune a small threshold set
-
-```powershell
-py -m tuning.cmaes --dry-run
-py -m tuning.cmaes --front-run-only --baseline submission_main_v7_1.py --generations 4 --games 10 --workers 8
-py -m tuning.build_candidate --checkpoint artifacts/tuning/cmaes-7.2-front-run.json
-py -m tools.benchmark --a artifacts/candidate/main.py --b main.py --n 20
-```
-
-Do not promote a checkpoint on optimizer fitness alone. Build a standalone
-candidate, run fresh-seed head-to-head games against `main.py`, then verify it
-against `opponents/mapleleaf_6_7.py`. See [docs/tuning.md](docs/tuning.md).
-
-## Kaggle CLI
-
-Once authenticated (`kaggle auth login`), the useful workflow is:
-
-```powershell
-kaggle competitions submissions kaggriculture
-kaggle competitions episodes SUBMISSION_ID
-kaggle competitions replay EPISODE_ID -p artifacts/replays
-kaggle competitions logs EPISODE_ID 0 -p artifacts/logs
-```
-
-The official competition requires `main.py` at the archive root and forbids
-network ingress/egress during an episode.
-
-## Verified 7.2 gates
-
-On Kaggle Environments 1.32.7, the production `main.py` achieved **20/20 wins**
-against the supplied Mapleleaf 7.1 file and **15/20 wins** against 10 paired-seat
-exact-seed replays from current #1 player Crop Dusta. The replay opponent is
-non-reactive, so this is a reproducible replay-policy benchmark rather than a
-claim about private live source. Full results and the CMA-ES checkpoint are in
-[docs/progress-2026-08-28.md](docs/progress-2026-08-28.md).
+The Kaggle artifact contains one root-level `main.py` and uses only Python's
+standard library at runtime.

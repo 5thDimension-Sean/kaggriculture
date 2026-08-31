@@ -1,6 +1,6 @@
 [project]
-name = "mapleleaf-kaggriculture"
-version = "6.8.0"
+name = "aether-kaggriculture"
+version = "1.0.0"
 requires-python = ">=3.10"
 
 [tool.ruff]

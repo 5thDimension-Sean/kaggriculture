@@ -44,7 +44,7 @@ def extract_routes_from_episode(fpath):
                 actions.append(clean)
         # Strip leading empty step (training JSONs include a step-0 PASS that
         # the 4.5 route backbone omits — dropping it keeps the index aligned).
-        while actions and (
+        if actions and (
             actions[0].get("farmer") == ["PASS"]
             and not actions[0].get("hands")
             and not actions[0].get("market")
