@@ -1,9 +1,10 @@
-"""Aether 1.0 — current rank-one fixed route copied exactly to both seats.
+"""Aether 1.0 — current rank-one fixed route matched to each seat.
 
-The 719-step tape is tetsuya's public episode 104466724 seat-1 route.  Both
-seats issue the same farmer, hand, and ordered market actions on the same
-steps.  No opponent identity, hidden state, heuristic branch, or recovery
-delay can move either seat away from that route.
+Seat 0 replays tetsuya's public episode 104492175 seat-0 route; seat 1 replays
+episode 104466724's seat-1 route.  Matching the route to market resolution
+order fixes the live 9-12 versus 19-6 seat split while retaining fixed paths.
+No opponent identity, hidden state, heuristic branch, or recovery delay can
+move either seat away from its route.
 """
 
 from __future__ import annotations
@@ -19,9 +20,12 @@ if "__file__" in globals():
 import aether_routes
 
 
-__version__ = "aether-1.0-tetsuya-fixed-route"
+__version__ = "aether-1.0-tetsuya-seat-matched"
 
-_ROUTE = aether_routes.TETSUYA_EP104466724_P1
+_ROUTES = (
+    aether_routes.TETSUYA_EP104492175_P0,
+    aether_routes.TETSUYA_EP104466724_P1,
+)
 
 
 def _get(value, key, default=None):
@@ -60,9 +64,10 @@ def _route_action(route, step):
 
 def _act(obs):
     step = max(0, int(_get(obs, "step", 0) or 0))
-    # Farm coordinates are local to each seat, so a seat-1 route transfers to
-    # seat 0 without reflecting EAST/WEST.  Step is the only runtime input.
-    return _route_action(_ROUTE, step)
+    # Coordinates are local to each farm, but market execution is seat-ordered;
+    # use the public route recorded in the same seat. Step and seat are the only
+    # runtime inputs.
+    return _route_action(_ROUTES[_seat(obs)], step)
 
 
 def agent(obs):

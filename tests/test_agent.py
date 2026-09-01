@@ -12,7 +12,7 @@ REFERENCE_67 = os.path.join(PROJECT_ROOT, "opponents", "mapleleaf_6_7.py")
 
 class AgentTests(unittest.TestCase):
     def test_version_is_aether_1(self):
-        self.assertEqual(main.__version__, "aether-1.0-tetsuya-fixed-route")
+        self.assertEqual(main.__version__, "aether-1.0-tetsuya-seat-matched")
 
     def test_both_seats_use_tetsuya_fixed_route(self):
         for player in (0, 1):
@@ -22,7 +22,7 @@ class AgentTests(unittest.TestCase):
                 "farms": [{"hands": []}, {"hands": []}],
                 "market": {"inventory": {"WOOL": 10000, "MILK": 10000}},
             }
-            self.assertEqual(main._act(observation), main._route_action(main._ROUTE, 0))
+            self.assertEqual(main._act(observation), main._route_action(main._ROUTES[player], 0))
 
     def test_action_ignores_farm_tile_state(self):
         """A weed under a scheduled BUILD/PLANT tile must not change the
@@ -49,26 +49,11 @@ class AgentTests(unittest.TestCase):
                     main._act({**observation, "farms": [{"hands": []}, {"hands": []}]}),
                 )
 
-    def test_both_seats_identical_across_full_random_episode(self):
-        from kaggle_environments import make
-
-        for seed in (1, 2, 3):
-            env = make(
-                "kaggriculture",
-                configuration={"episodeSteps": 200, "seed": seed},
-                debug=True,
-            )
-            env.run([main.agent, main.agent])
-            for step in env.steps:
-                self.assertEqual(step[0].action, step[1].action)
-
-    def test_market_schedule_is_an_exact_route_copy(self):
-        route = main._ROUTE
-        for step in range(len(route)):
-            self.assertEqual(
-                main._route_action(route, step)["market"],
-                route[step]["market"],
-            )
+    def test_market_schedules_are_exact_seat_matched_copies(self):
+        for player, route in enumerate(main._ROUTES):
+            for step in range(len(route)):
+                observation = {"player": player, "step": step, "farms": [{}, {}]}
+                self.assertEqual(main._act(observation)["market"], route[step]["market"])
 
     def test_generated_submission_loads_by_file_path(self):
         with tempfile.TemporaryDirectory() as directory:
