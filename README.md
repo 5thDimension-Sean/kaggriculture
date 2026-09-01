@@ -6,14 +6,20 @@ It does not identify players or use hidden state.
 
 ## Policy
 
-- Seat 0 uses tetsuya's production geometry and forks at the first day
-  boundary from public market inventory.
-- `WOOL <= 9995` selects the animal-pressure branch. This exact boundary
-  separated the sampled Driz Lo and MtN seat-0 route families.
-- Otherwise `MILK <= 9995` selects tetsuya's melon-heavy dairy-pressure
-  branch; the remaining state selects its strawberry-heavy crop branch.
-- Seat 1 uses a per-action majority reconstruction of MtN's four public
-  games. That route measured 99.2% self-consistency.
+- Both seats use a per-action majority reconstruction of MtN's four public
+  seat-1 games. That logistics route measured 99.2% self-consistency and
+  transfers directly because farm coordinates are player-local.
+- Workers follow the seat-1 rule of thumb: establish five specialized hands,
+  keep animal care and crop watering continuous, and synchronize pickup,
+  placement, harvest, and market replenishment instead of making isolated
+  greedy moves.
+- At each day boundary, `WOOL <= 9995` marks animal pressure and
+  `MILK <= 9995` marks dairy pressure. Aether only uses this top-three signal
+  to prioritize already-scheduled sales; it never splices incompatible farm
+  geometries or changes demonstrated quantities.
+- Market order positions are a cash-flow invariant: sales, purchases, and
+  hires stay in their demonstrated slots because an early sale may finance a
+  later action in the same turn. Only sale items may exchange sale slots.
 - A per-worker delay tracker repairs route-breaking weeds without shifting
   every other worker's schedule.
 
@@ -22,7 +28,7 @@ The evidence and limitations are in
 
 ## Layout
 
-- `main.py` — Aether runtime and public-state route selector
+- `main.py` — Aether runtime, seat-1 logistics translator, and sales priority
 - `aether_routes.py` — generated, compressed route library
 - `tools/build_aether_routes.py` — reproducible route generator
 - `tools/analyze_top_routes.py` — route divergence and threshold analysis

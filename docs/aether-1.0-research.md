@@ -45,15 +45,34 @@ This is replay inference, not access to private source. The causal model most
 consistent with the observations is one early opponent-production fingerprint
 followed by state-driven route execution.
 
-## Implementation choice
+## Seat-1 logistics translation
 
-Aether keeps tetsuya's internally compatible seat-0 geometry and uses the
-Driz Lo/MtN wool threshold as the leading public-state signal. It does not
-splice arbitrary worker actions from incompatible maps. MtN's seat-1 route is
-safe to reconstruct by majority vote because that seat is genuinely stable.
+A direct local isolation test showed that the MtN seat-1 consensus route also
+works from seat 0. Against the MapleLeaf 6.7 reference on five fixed seat-0
+seeds, it won 5/5 with a mean score of 100,096 and a +9,960 margin. The three
+tetsuya-derived seat-0 branches won at most 1/5 in the same test. Farm
+coordinates are player-local, so no EAST/WEST mirror is required.
 
-Local reference benchmarking confirms the asymmetry: in ten games against
-the previous MapleLeaf 6.7 reference, Aether won 6/10 overall and all five
-games from seat 1, while seat 0 won only one. Public leaderboard routes are
-opponent-coupled; replay consistency alone is not evidence of universal
-strength.
+Aether therefore applies the stable seat-1 logistics cadence to both seats:
+
+1. establish five specialized workers and the animal/crop inventory together;
+2. keep care, fertilizer collection, watering, and harvest loops synchronized;
+3. treat pickup/place actions as scheduled handoffs rather than greedy choices;
+4. replenish workers and seeds at route checkpoints; and
+5. preserve the full production geometry when public market conditions change.
+
+Market action order is part of the logistics policy, not presentation. An
+initial attempt to move all purchases ahead of sales lost 0/10 because the
+sales finance later purchases and hires within the same turn. The corrected
+policy leaves every sale/buy/hire slot in place and can only reorder which
+product occupies an existing sale slot.
+
+The Driz Lo/MtN wool threshold and tetsuya milk/crop distinction are retained
+only as a day-boundary sales-priority rule. Aether reorders existing sales
+toward the observed shortage but never invents inventory or changes quantities.
+
+The original Aether fusion benchmark exposed a seat asymmetry (5/5 from seat
+1, 1/5 from seat 0). The corrected seat-1 translation won 10/10 across paired
+seats against MapleLeaf 6.7, averaging 101,184 versus 92,608 for a +8,576
+margin. This remains a local fixed-seed result, not a guarantee of live
+leaderboard performance.

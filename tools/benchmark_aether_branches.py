@@ -32,7 +32,7 @@ def main_cli():
     args = parser.parse_args()
     opponent = benchmark.load_agent("opponents/mapleleaf_6_7.py")
     seeds = benchmark._SEEDS_P0[: args.n]
-    for mode in ("animal_pressure", "dairy_pressure", "crop_pressure"):
+    for mode in ("animal_pressure", "dairy_pressure", "crop_pressure", "mtn_p1"):
         agent = forced_agent(mode)
         rows = []
         for seed in seeds:

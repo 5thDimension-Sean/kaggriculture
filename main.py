@@ -1,10 +1,10 @@
-"""Aether 1.0 — public-replay route fusion for Kaggriculture.
+"""Aether 1.0 — seat-1 logistics translated to both Kaggriculture seats.
 
-Seat 0 follows tetsuya's production geometry and selects its first-day crop
-branch from the same public market fingerprint that separates the current
-Driz Lo and MtN routes. Seat 1 follows MtN's 99.2%-consistent consensus
-route. The runtime is deterministic, standard-library only, and contains no
-player-name or hidden-state checks.
+Both seats follow MtN's 99.2%-consistent seat-1 logistics cadence. Seat 0
+adds only public-state sales priority inspired by the route branches shared
+by Driz Lo, MtN, and tetsuya; production geometry is never spliced between
+incompatible routes. The runtime contains no player-name or hidden-state
+checks.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ if "__file__" in globals():
 import aether_routes
 
 
-__version__ = "aether-1.0-route-fusion"
+__version__ = "aether-1.0-seat1-logistics"
 
 _P0_FORK_STEP = 73
 _PRESSURE_THRESHOLD = 9995
@@ -31,8 +31,8 @@ _ROUTES = {
     "mtn_p1": aether_routes.P1_MTN_CONSENSUS,
 }
 _STATE = {
-    0: {"last_step": -1, "mode": "dairy_pressure", "delays": {}},
-    1: {"last_step": -1, "mode": "mtn_p1", "delays": {}},
+    0: {"last_step": -1, "pressure": "crop_pressure", "delays": {}},
+    1: {"last_step": -1, "pressure": "crop_pressure", "delays": {}},
 }
 
 
@@ -83,14 +83,16 @@ def _episode_state(obs, step):
     if step == 0 or step < int(state.get("last_step", -1)):
         state = {
             "last_step": step,
-            "mode": "mtn_p1" if seat else "dairy_pressure",
+            "pressure": "crop_pressure",
             "delays": {},
         }
         _STATE[seat] = state
     state["last_step"] = step
-    if seat == 0 and step >= _P0_FORK_STEP and not state.get("forked"):
-        state["mode"] = _public_route_mode(obs)
-        state["forked"] = True
+    # The top routes reassess shared-market pressure near each day boundary.
+    # This affects the ordering of sales only; the proven logistics cadence
+    # remains intact on both seats.
+    if step >= _P0_FORK_STEP and (step - _P0_FORK_STEP) % 72 == 0:
+        state["pressure"] = _public_route_mode(obs)
     return state
 
 
@@ -169,16 +171,39 @@ def _sanitize_market(orders):
     return clean
 
 
+def _prioritize_pressure_sales(orders, pressure):
+    """Front-load already-scheduled sales into the observed supply gap.
+
+    This captures the common top-three market rule without inventing stock or
+    altering quantities. Non-sale orders keep their relative order, as do
+    sales with equal priority.
+    """
+    priorities = {
+        "animal_pressure": {"WOOL": 0, "MILK": 1, "EGG": 2},
+        "dairy_pressure": {"MILK": 0, "WOOL": 1, "EGG": 2},
+        "crop_pressure": {"MELON": 0, "STRAWBERRY": 1, "TOMATO": 2},
+    }.get(pressure, {})
+    orders = _sanitize_market(orders)
+    sale_slots = [index for index, order in enumerate(orders) if order[0] == "SELL"]
+    sells = [orders[index] for index in sale_slots]
+    sells.sort(key=lambda order: priorities.get(order[1] if len(order) > 1 else "", 99))
+    for index, sale in zip(sale_slots, sells):
+        orders[index] = sale
+    return orders
+
+
 def _act(obs):
     step = max(0, int(_get(obs, "step", 0) or 0))
     state = _episode_state(obs, step)
-    route = _ROUTES[state["mode"]]
+    # Kaggriculture farm coordinates are local to each player, so the stable
+    # seat-1 worker schedule transfers directly to seat 0—no EAST/WEST mirror.
+    route = _ROUTES["mtn_p1"]
     scheduled = _route_action(route, step)
     farmer, hands = _production_with_recovery(obs, route, step, state)
     return {
         "farmer": farmer,
         "hands": hands,
-        "market": _sanitize_market(scheduled["market"]),
+        "market": _prioritize_pressure_sales(scheduled["market"], state["pressure"]),
     }
 
 
