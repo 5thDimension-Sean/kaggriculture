@@ -76,3 +76,20 @@ The original Aether fusion benchmark exposed a seat asymmetry (5/5 from seat
 seats against MapleLeaf 6.7, averaging 101,184 versus 92,608 for a +8,576
 margin. This remains a local fixed-seed result, not a guarantee of live
 leaderboard performance.
+
+## Mirror experiment
+
+Both farms expose the same player-local map: the farmer starts at `[4, 4]`,
+the northwest quadrant is unlocked, and the initial tile coordinates are
+identical. Five fixed seat-0 seeds confirmed that no spatial transform helps:
+
+| Transform | Wins | Mean score | Paired change vs unmirrored |
+|---|---:|---:|---:|
+| Unmirrored seat-1 route | 5/5 | 100,037 | — |
+| Swap east/west | 0/5 | 0 | -100,037 |
+| Swap north/south | 0/5 | 234 | -99,803 |
+| Rotate 180° | 0/5 | 0 | -100,037 |
+
+The pre-translation seat-0 build at commit `a6c0506` averaged 76,523 on the
+same seeds. The current unmirrored translation improves that by 23,514 per
+game. Aether therefore retains the unmirrored route.
