@@ -63,19 +63,19 @@ Aether therefore applies the stable seat-1 logistics cadence to both seats:
 
 Market action order is part of the logistics policy, not presentation. An
 initial attempt to move all purchases ahead of sales lost 0/10 because the
-sales finance later purchases and hires within the same turn. The corrected
-policy leaves every sale/buy/hire slot in place and can only reorder which
-product occupies an existing sale slot.
+sales finance later purchases and hires within the same turn. A later version
+only exchanged products among sale slots, but the final exact-copy policy
+removes that difference too: every market order matches the seat-1 tape.
 
-The Driz Lo/MtN wool threshold and tetsuya milk/crop distinction are retained
-only as a day-boundary sales-priority rule. Aether reorders existing sales
-toward the observed shortage but never invents inventory or changes quantities.
+The Driz Lo/MtN wool threshold and tetsuya milk/crop distinction remain useful
+research findings, but the exact-copy policy does not use them at runtime.
+Seat 0 retains every demonstrated seat-1 market order and quantity.
 
 The original Aether fusion benchmark exposed a seat asymmetry (5/5 from seat
-1, 1/5 from seat 0). The corrected seat-1 translation won 10/10 across paired
-seats against MapleLeaf 6.7, averaging 101,184 versus 92,608 for a +8,576
-margin. This remains a local fixed-seed result, not a guarantee of live
-leaderboard performance.
+1, 1/5 from seat 0). The final exact seat-1 copy won 10/10 across paired seats
+against MapleLeaf 6.7, averaging 101,221 versus 92,576 for a +8,645 margin.
+This remains a local fixed-seed result, not a guarantee of live leaderboard
+performance.
 
 ## Mirror experiment
 
@@ -85,11 +85,11 @@ identical. Five fixed seat-0 seeds confirmed that no spatial transform helps:
 
 | Transform | Wins | Mean score | Paired change vs unmirrored |
 |---|---:|---:|---:|
-| Unmirrored seat-1 route | 5/5 | 100,037 | — |
-| Swap east/west | 0/5 | 0 | -100,037 |
-| Swap north/south | 0/5 | 234 | -99,803 |
-| Rotate 180° | 0/5 | 0 | -100,037 |
+| Exact, unchanged seat-1 copy | 5/5 | 100,096 | — |
+| Swap east/west | 0/5 | 0 | -100,096 |
+| Swap north/south | 0/5 | 234 | -99,862 |
+| Rotate 180° | 0/5 | 0 | -100,096 |
 
 The pre-translation seat-0 build at commit `a6c0506` averaged 76,523 on the
-same seeds. The current unmirrored translation improves that by 23,514 per
-game. Aether therefore retains the unmirrored route.
+same seeds. The exact seat-1 copy improves that by 23,573 per game. Aether
+therefore retains the unchanged seat-1 moves on seat 0.

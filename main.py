@@ -1,10 +1,9 @@
-"""Aether 1.0 — seat-1 logistics translated to both Kaggriculture seats.
+"""Aether 1.0 — exact seat-1 logistics copied to both Kaggriculture seats.
 
-Both seats follow MtN's 99.2%-consistent seat-1 logistics cadence. Seat 0
-adds only public-state sales priority inspired by the route branches shared
-by Driz Lo, MtN, and tetsuya; production geometry is never spliced between
-incompatible routes. The runtime contains no player-name or hidden-state
-checks.
+Both seats issue MtN's 99.2%-consistent seat-1 action schedule unchanged:
+same directions, worker actions, crops, animals, market order slots, and
+quantities. Only per-worker weed recovery may delay an obstructed actor. The
+runtime contains no player-name or hidden-state checks.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ if "__file__" in globals():
 import aether_routes
 
 
-__version__ = "aether-1.0-seat1-logistics"
+__version__ = "aether-1.0-seat1-exact-copy"
 
 _P0_FORK_STEP = 73
 _PRESSURE_THRESHOLD = 9995
@@ -31,8 +30,8 @@ _ROUTES = {
     "mtn_p1": aether_routes.P1_MTN_CONSENSUS,
 }
 _STATE = {
-    0: {"last_step": -1, "pressure": "crop_pressure", "delays": {}},
-    1: {"last_step": -1, "pressure": "crop_pressure", "delays": {}},
+    0: {"last_step": -1, "delays": {}},
+    1: {"last_step": -1, "delays": {}},
 }
 
 
@@ -83,16 +82,10 @@ def _episode_state(obs, step):
     if step == 0 or step < int(state.get("last_step", -1)):
         state = {
             "last_step": step,
-            "pressure": "crop_pressure",
             "delays": {},
         }
         _STATE[seat] = state
     state["last_step"] = step
-    # The top routes reassess shared-market pressure near each day boundary.
-    # This affects the ordering of sales only; the proven logistics cadence
-    # remains intact on both seats.
-    if step >= _P0_FORK_STEP and (step - _P0_FORK_STEP) % 72 == 0:
-        state["pressure"] = _public_route_mode(obs)
     return state
 
 
@@ -171,27 +164,6 @@ def _sanitize_market(orders):
     return clean
 
 
-def _prioritize_pressure_sales(orders, pressure):
-    """Front-load already-scheduled sales into the observed supply gap.
-
-    This captures the common top-three market rule without inventing stock or
-    altering quantities. Non-sale orders keep their relative order, as do
-    sales with equal priority.
-    """
-    priorities = {
-        "animal_pressure": {"WOOL": 0, "MILK": 1, "EGG": 2},
-        "dairy_pressure": {"MILK": 0, "WOOL": 1, "EGG": 2},
-        "crop_pressure": {"MELON": 0, "STRAWBERRY": 1, "TOMATO": 2},
-    }.get(pressure, {})
-    orders = _sanitize_market(orders)
-    sale_slots = [index for index, order in enumerate(orders) if order[0] == "SELL"]
-    sells = [orders[index] for index in sale_slots]
-    sells.sort(key=lambda order: priorities.get(order[1] if len(order) > 1 else "", 99))
-    for index, sale in zip(sale_slots, sells):
-        orders[index] = sale
-    return orders
-
-
 def _act(obs):
     step = max(0, int(_get(obs, "step", 0) or 0))
     state = _episode_state(obs, step)
@@ -203,7 +175,7 @@ def _act(obs):
     return {
         "farmer": farmer,
         "hands": hands,
-        "market": _prioritize_pressure_sales(scheduled["market"], state["pressure"]),
+        "market": _sanitize_market(scheduled["market"]),
     }
 
 

@@ -34,23 +34,19 @@ def transform_route(route, directions):
 
 
 def route_agent(route):
-    state = {"last_step": -1, "pressure": "crop_pressure", "delays": {}}
+    state = {"last_step": -1, "delays": {}}
 
     def run(obs):
         step = max(0, int(obs.get("step", 0) or 0))
         if step == 0 or step < state["last_step"]:
-            state.update(last_step=step, pressure="crop_pressure", delays={})
+            state.update(last_step=step, delays={})
         state["last_step"] = step
-        if step >= main._P0_FORK_STEP and (step - main._P0_FORK_STEP) % 72 == 0:
-            state["pressure"] = main._public_route_mode(obs)
         scheduled = main._route_action(route, step)
         farmer, hands = main._production_with_recovery(obs, route, step, state)
         return {
             "farmer": farmer,
             "hands": hands,
-            "market": main._prioritize_pressure_sales(
-                scheduled["market"], state["pressure"]
-            ),
+            "market": main._sanitize_market(scheduled["market"]),
         }
 
     return run

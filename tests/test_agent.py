@@ -12,7 +12,7 @@ REFERENCE_67 = os.path.join(PROJECT_ROOT, "opponents", "mapleleaf_6_7.py")
 
 class AgentTests(unittest.TestCase):
     def test_version_is_aether_1(self):
-        self.assertEqual(main.__version__, "aether-1.0-seat1-logistics")
+        self.assertEqual(main.__version__, "aether-1.0-seat1-exact-copy")
 
     def test_public_route_fingerprint(self):
         def observation(wool, milk):
@@ -32,24 +32,13 @@ class AgentTests(unittest.TestCase):
             }
             self.assertEqual(main._act(observation), main._route_action(main._ROUTES["mtn_p1"], 0))
 
-    def test_pressure_priority_only_reorders_existing_sales(self):
-        orders = [
-            ["SELL", "EGG", 2],
-            ["BUY_SEED", "WHEAT", 1],
-            ["SELL", "WOOL", 3],
-            ["HIRE"],
-            ["SELL", "MILK", 4],
-        ]
-        self.assertEqual(
-            main._prioritize_pressure_sales(orders, "animal_pressure"),
-            [
-                ["SELL", "WOOL", 3],
-                ["BUY_SEED", "WHEAT", 1],
-                ["SELL", "MILK", 4],
-                ["HIRE"],
-                ["SELL", "EGG", 2],
-            ],
-        )
+    def test_market_schedule_is_an_exact_seat1_copy(self):
+        route = main._ROUTES["mtn_p1"]
+        for step in range(len(route)):
+            self.assertEqual(
+                main._sanitize_market(main._route_action(route, step)["market"]),
+                route[step]["market"],
+            )
 
     def test_generated_submission_loads_by_file_path(self):
         with tempfile.TemporaryDirectory() as directory:
