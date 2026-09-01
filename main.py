@@ -2,7 +2,7 @@
 
 Both seats issue MtN's 99.2%-consistent seat-1 action schedule unchanged:
 same directions, worker actions, crops, animals, market order slots, and
-quantities. Only per-worker weed recovery may delay an obstructed actor. The
+quantities, on every step, regardless of either farm's own tile state. The
 runtime contains no player-name or hidden-state checks.
 """
 
@@ -28,10 +28,6 @@ _ROUTES = {
     "dairy_pressure": aether_routes.P0_DAIRY_PRESSURE,
     "crop_pressure": aether_routes.P0_CROP_PRESSURE,
     "mtn_p1": aether_routes.P1_MTN_CONSENSUS,
-}
-_STATE = {
-    0: {"last_step": -1, "delays": {}},
-    1: {"last_step": -1, "delays": {}},
 }
 
 
@@ -76,19 +72,6 @@ def _public_route_mode(obs):
     return "crop_pressure"
 
 
-def _episode_state(obs, step):
-    seat = _seat(obs)
-    state = _STATE[seat]
-    if step == 0 or step < int(state.get("last_step", -1)):
-        state = {
-            "last_step": step,
-            "delays": {},
-        }
-        _STATE[seat] = state
-    state["last_step"] = step
-    return state
-
-
 def _copy_action(action):
     action = copy.deepcopy(action or {})
     return {
@@ -103,46 +86,6 @@ def _route_action(route, step):
         return {"farmer": ["PASS"], "hands": [], "market": []}
     index = min(max(0, int(step)), len(route) - 1)
     return _copy_action(route[index])
-
-
-def _tile_at(farm, position):
-    try:
-        x, y = int(position[0]), int(position[1])
-        return (_get(farm, "tiles", []) or [])[y][x]
-    except (IndexError, TypeError, ValueError):
-        return "LOCKED"
-
-
-def _actor_action(route, step, actor, delay):
-    source = _route_action(route, max(0, step - delay))
-    if actor == "farmer":
-        return list(source["farmer"])
-    hands = source["hands"]
-    return list(hands[actor] if actor < len(hands) else ["PASS"])
-
-
-def _production_with_recovery(obs, route, step, state):
-    """Replay production and absorb route-breaking weed delays per worker."""
-    seat = _seat(obs)
-    farm = _farm(obs, seat)
-    positions = [_get(farm, "farmer"), *list(_get(farm, "hands", []) or [])]
-    delays = state.setdefault("delays", {})
-    actions = []
-    for index, position in enumerate(positions):
-        actor = "farmer" if index == 0 else index - 1
-        delay = int(delays.get(actor, 0))
-        intended = _actor_action(route, step, actor, delay)
-        tile = _tile_at(farm, position)
-        if (
-            intended
-            and intended[0] in ("BUILD_PASTURE", "PLANT")
-            and isinstance(tile, dict)
-            and tile.get("kind") == "WEED"
-        ):
-            delays[actor] = delay + 1
-            intended = ["DIG"]
-        actions.append(intended)
-    return actions[0] if actions else ["PASS"], actions[1:]
 
 
 def _sanitize_market(orders):
@@ -166,15 +109,15 @@ def _sanitize_market(orders):
 
 def _act(obs):
     step = max(0, int(_get(obs, "step", 0) or 0))
-    state = _episode_state(obs, step)
     # Kaggriculture farm coordinates are local to each player, so the stable
     # seat-1 worker schedule transfers directly to seat 0—no EAST/WEST mirror.
-    route = _ROUTES["mtn_p1"]
-    scheduled = _route_action(route, step)
-    farmer, hands = _production_with_recovery(obs, route, step, state)
+    # The schedule is issued verbatim from `step` alone, with no dependence on
+    # either farm's own tile state, so both seats always emit byte-identical
+    # actions regardless of where weeds randomly spawn on each farm.
+    scheduled = _route_action(_ROUTES["mtn_p1"], step)
     return {
-        "farmer": farmer,
-        "hands": hands,
+        "farmer": scheduled["farmer"],
+        "hands": scheduled["hands"],
         "market": _sanitize_market(scheduled["market"]),
     }
 

@@ -77,6 +77,32 @@ against MapleLeaf 6.7, averaging 101,221 versus 92,576 for a +8,645 margin.
 This remains a local fixed-seed result, not a guarantee of live leaderboard
 performance.
 
+## Weed-recovery removal (2026-09-01)
+
+The exact-copy submission (Kaggle submission 55929599, "Aether 1.0 exact
+seat-1 copy") still carried a per-worker delay tracker: if a scheduled
+`BUILD_PASTURE`/`PLANT` landed on a weed tile, that worker DIG'd instead and
+every later action for that worker shifted back by one step, forever.
+
+The real validation episode for that submission (episode 104481488, both
+seats run by the same agent) showed this was not actually seat-parity: 460 of
+720 steps had different farmer/hand actions between seat 0 and seat 1, and
+the two seats finished with rewards of 36,988 and 43,951. `weedSpawnChance`
+(0.005/tile/turn in the live configuration) spawns weeds independently on
+each farm, so the two seats' workers got blocked at different times, and once
+one worker's schedule slipped it never resynced -- the offset compounded for
+the rest of the game.
+
+`main.py` no longer tracks per-worker delays or reads either farm's tiles at
+all for farmer/hand actions: `_act()` returns `route[step]` verbatim, exactly
+as it already did for market orders. This guarantees byte-identical actions
+for both seats on every step, at the cost of occasionally wasting a single
+`PLANT`/`BUILD_PASTURE` action if a weed happens to be on that exact tile
+that turn (no schedule-wide delay, no seat divergence). Verified locally via
+`tests/test_agent.py::test_both_seats_identical_across_full_random_episode`,
+which runs full unseeded episodes through the real environment and asserts
+`step[0].action == step[1].action` for every step.
+
 ## Mirror experiment
 
 Both farms expose the same player-local map: the farmer starts at `[4, 4]`,

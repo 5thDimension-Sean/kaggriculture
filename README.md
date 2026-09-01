@@ -14,13 +14,21 @@ It does not identify players or use hidden state.
   placement, harvest, and market replenishment instead of making isolated
   greedy moves.
 - Seat 0 copies the seat-1 tape exactly: no direction transform, crop fork,
-  market reordering, or quantity change. The only runtime deviation is a
-  per-worker delay when a weed physically blocks a build or planting action.
+  market reordering, or quantity change, and no runtime deviation of any
+  kind. The action for a given step depends only on `step`, never on either
+  seat's own farm/tile state, so both seats issue byte-identical actions on
+  every step of every episode.
 - Market order positions are a cash-flow invariant: sales, purchases, and
   hires stay in their demonstrated slots because an early sale may finance a
   later action in the same turn.
-- A per-worker delay tracker repairs route-breaking weeds without shifting
-  every other worker's schedule.
+- An earlier version added a per-worker delay to dodge weeds that randomly
+  block a scheduled build/plant tile. It was removed: `weedSpawnChance` in
+  the real environment spawns weeds independently per farm, so the delay
+  desynchronized seat 0 from seat 1 (confirmed via the real Kaggle validation
+  episode for submission 55929599 -- episode 104481488 -- which showed
+  460/720 divergent steps and a 36,988 vs. 43,951 final-reward gap between
+  the two seats of the identical agent). See
+  `tests/test_agent.py::test_action_ignores_farm_tile_state`.
 
 The evidence and limitations are in
 [`docs/aether-1.0-research.md`](docs/aether-1.0-research.md).

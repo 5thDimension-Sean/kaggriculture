@@ -32,6 +32,44 @@ class AgentTests(unittest.TestCase):
             }
             self.assertEqual(main._act(observation), main._route_action(main._ROUTES["mtn_p1"], 0))
 
+    def test_action_ignores_farm_tile_state(self):
+        """A weed under a scheduled BUILD/PLANT tile must not change the
+        action or fall the agent behind schedule -- the real Kaggle
+        validation episode (episode 104481488) showed seat 0 and seat 1
+        drifting to 460/720 different actions because a prior per-worker
+        weed-recovery delay was farm-state dependent and the two farms spawn
+        weeds independently. main.py must depend only on `step`."""
+        weedy_farm = {
+            "farmer": [0, 0],
+            "hands": [[0, 0]] * 8,
+            "tiles": [[{"kind": "WEED"}] * 10 for _ in range(10)],
+        }
+        for player in (0, 1):
+            for step in (0, 73, 186, 300):
+                observation = {
+                    "player": player,
+                    "step": step,
+                    "farms": [weedy_farm, weedy_farm],
+                    "market": {"inventory": {"WOOL": 10000, "MILK": 10000}},
+                }
+                self.assertEqual(
+                    main._act(observation),
+                    main._act({**observation, "farms": [{"hands": []}, {"hands": []}]}),
+                )
+
+    def test_both_seats_identical_across_full_random_episode(self):
+        from kaggle_environments import make
+
+        for seed in (1, 2, 3):
+            env = make(
+                "kaggriculture",
+                configuration={"episodeSteps": 200, "seed": seed},
+                debug=True,
+            )
+            env.run([main.agent, main.agent])
+            for step in env.steps:
+                self.assertEqual(step[0].action, step[1].action)
+
     def test_market_schedule_is_an_exact_seat1_copy(self):
         route = main._ROUTES["mtn_p1"]
         for step in range(len(route)):
