@@ -26,12 +26,13 @@ _FRONT_RUN_NAMES = (
 )
 
 
-def _worker_init(baseline_path):
+def _worker_init(baseline_path, template_path=None):
     from tools import benchmark
 
     _WORKER["benchmark"] = benchmark
     _WORKER["baseline"] = benchmark.load_agent(baseline_path)
     _WORKER["candidates"] = {}
+    _WORKER["template_path"] = template_path
 
 
 def _candidate(vector):
@@ -42,7 +43,7 @@ def _candidate(vector):
             cache.clear()
         from tuning.build_candidate import make_agent
 
-        cache[key] = make_agent(vector)
+        cache[key] = make_agent(vector, template_path=_WORKER.get("template_path"))
     return cache[key]
 
 
@@ -91,12 +92,13 @@ def evaluate_population(pool, vectors, seeds):
     ]
 
 
-def _save_checkpoint(path, generation, best_params, best_score, seed, baseline):
+def _save_checkpoint(path, generation, best_params, best_score, seed, baseline, template=None):
     payload = {
         "version": "mapleleaf-7.2-cma-lite-v1",
         "generation": generation,
         "seed": seed,
         "baseline": baseline,
+        "template": template,
         "param_names": list(space.NAMES),
         "best_params": list(best_params),
         "best_score": best_score,
@@ -120,6 +122,11 @@ def main():
     parser.add_argument("--seed", type=int, default=68013)
     parser.add_argument("--sigma", type=float, default=0.16)
     parser.add_argument("--baseline", default=os.path.join(PROJECT_ROOT, "main.py"))
+    parser.add_argument(
+        "--template",
+        default=None,
+        help="Alternate route-backbone source for candidates (default: main.py itself)",
+    )
     parser.add_argument(
         "--checkpoint",
         default=os.path.join(PROJECT_ROOT, "artifacts", "tuning", "cmaes-7.2.json"),
@@ -177,8 +184,9 @@ def main():
         },
     )
     baseline_path = os.path.abspath(args.baseline)
+    template_path = os.path.abspath(args.template) if args.template else None
     context = mp.get_context("spawn")
-    with context.Pool(args.workers, initializer=_worker_init, initargs=(baseline_path,)) as pool:
+    with context.Pool(args.workers, initializer=_worker_init, initargs=(baseline_path, template_path)) as pool:
         for generation in range(start_generation, start_generation + args.generations):
             normalized = strategy.ask()
             full_normalized = []
@@ -202,6 +210,7 @@ def main():
                 best_score,
                 args.seed,
                 baseline_path,
+                template_path,
             )
             print(
                 f"generation={generation:03d} "

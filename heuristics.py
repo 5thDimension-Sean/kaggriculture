@@ -108,6 +108,12 @@ DEFAULT_PARAMS = {
     "shed_guard_stop":      719,
     "shed_guard_threshold": 90,
     "shed_guard_batch_cap": 20,
+
+    # v6: shop/town-center drain-cycle sell timing (see _item_drained_at).
+    # Default OFF like every other new overlay in this project's history.
+    "cycle_sell_enabled": 0.0,
+    "cycle_sell_window":  1,
+    "cycle_sell_bonus":   0.9,
 }
 
 # Hand-copied from kaggle_environments/envs/kaggriculture/kaggriculture.py
@@ -790,16 +796,52 @@ def _threshold_fraction(step, item):
     return base + t * (floor - base)
 
 
-def _reserve_price(obs, item, step):
+def _item_drained_at(obs, configuration, item, step):
+    """True if `item`'s market inventory was drained by a shop or the town
+    center at exactly this step -- matches the real engine's `_town_consume`
+    (kaggle_environments/envs/kaggriculture/kaggriculture.py): a shop/center
+    drain fires whenever step % interval == 0, deterministically, regardless
+    of what either player does. A drain removes supply and therefore raises
+    `market_price` for that item (see the below/above-I0 branches above) --
+    so the step(s) right after a drain are the local high point in price
+    until the next drain or until someone's SELL adds supply back."""
+    if step < 0:
+        return False
+    shop_interval = max(1, int(_get(configuration, "townShopSellInterval", 4) or 4))
+    if step % shop_interval == 0:
+        town = _get(obs, "town", {}) or {}
+        shops = list(_get(town, "unlocked_shops", []) or [])
+        if any(item in _SHOP_PRODUCTS.get(shop, ()) for shop in shops):
+            return True
+    if item != "FERTILIZER":
+        center_interval = max(1, int(_get(configuration, "townCenterSellInterval", 24) or 24))
+        if step % center_interval == 0:
+            return True
+    return False
+
+
+def _recently_drained(obs, configuration, item, step, window):
+    return any(
+        _item_drained_at(obs, configuration, item, step - offset)
+        for offset in range(max(0, int(window)) + 1)
+    )
+
+
+def _reserve_price(obs, item, step, configuration=None):
     base = float(_MARKET_PARAMS[item]["base"])
     fraction = _threshold_fraction(step, item)
     supply_scale = _opponent_supply_scale(obs, item)
     supply_discount = min(1.0, 1.0 / max(1.0, supply_scale))
     supply_discount = max(_P["opp_sell_min_supply_fraction"], supply_discount)
-    return base * fraction * supply_discount
+    price = base * fraction * supply_discount
+    if _P["cycle_sell_enabled"]:
+        configuration = configuration or _DEFAULT_CONFIGURATION
+        if _recently_drained(obs, configuration, item, step, _P["cycle_sell_window"]):
+            price *= float(_P["cycle_sell_bonus"])
+    return price
 
 
-def opportunistic_sell(obs, action, step):
+def opportunistic_sell(obs, action, step, configuration=None):
     if not _P["opp_sell_enabled"] or not (_P["opp_sell_start"] <= step <= _P["opp_sell_stop"]):
         return action
     action = _copy_action(action)
@@ -816,7 +858,7 @@ def opportunistic_sell(obs, action, step):
         if len(market) >= 10:
             break
         current_price = float(_get(prices, item, 0) or 0)
-        threshold = _reserve_price(obs, item, step)
+        threshold = _reserve_price(obs, item, step, configuration)
         if current_price <= _PRICE_FLOOR or current_price < threshold:
             continue
         available = max(0, int(projected.get(item, 0) or 0))

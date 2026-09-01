@@ -15,3 +15,5 @@ top-players-data/
 myreplay/
 replays/
 routes_*/
+*.ipynb
+hc.md
