@@ -33,8 +33,20 @@ def main() -> None:
     candidates = sorted(os.path.abspath(path) for path in glob.glob(args.candidates))
     with open(os.path.join(args.player_dir, "manifest.json"), encoding="utf-8") as handle:
         manifest = json.load(handle)
-    # Skip validation self-play: there is no distinct opponent policy to hold fixed.
-    manifest = manifest[1:]
+    # Skip validation self-play by content. Manifests are newest-first, so the
+    # validation game is normally last rather than at a stable list index.
+    rated_manifest = []
+    for entry in manifest:
+        replay_path = os.path.join(
+            args.player_dir, f"episode-{entry['episode_id']}-replay.json"
+        )
+        with open(replay_path, encoding="utf-8") as replay_handle:
+            replay = json.load(replay_handle)
+        names = replay.get("info", {}).get("TeamNames", [])
+        if len(names) >= 2 and names[0] == names[1]:
+            continue
+        rated_manifest.append(entry)
+    manifest = rated_manifest
     if args.limit:
         manifest = manifest[: args.limit]
     tasks = []
