@@ -58,13 +58,20 @@ def discover(seed_submission_id, target_names, max_hops=3, breadth_cap=60, sleep
                     name_to_sub.setdefault(a.team_name, a.submission_id)
                     if a.submission_id not in visited:
                         next_frontier.append(a.submission_id)
-                    if a.team_name in targets and a.team_name not in found:
+                    # A team can appear through many historical submissions.
+                    # Submission ids are monotonic, so retain the newest one
+                    # observed during the graph walk instead of whichever old
+                    # opponent happens to be encountered first.
+                    if (
+                        a.team_name in targets
+                        and a.submission_id > found.get(a.team_name, 0)
+                    ):
                         found[a.team_name] = a.submission_id
             time.sleep(sleep)
         print(f"[discover] hop {hop}: visited={len(visited)} names={len(name_to_sub)} found={len(found)}/{len(targets)}")
-        if len(found) >= len(targets):
-            break
-        frontier = list(set(next_frontier))[:breadth_cap]
+        # Continue all requested hops even after every name is seen: later
+        # frontier nodes may expose that team's newer active submission.
+        frontier = sorted(set(next_frontier), reverse=True)[:breadth_cap]
 
     return found, name_to_sub
 
@@ -149,7 +156,7 @@ def main():
     if args.discover:
         targets = [t.strip() for t in args.targets.split(",") if t.strip()]
         found, all_names = discover(args.seed_submission, targets)
-        with open(args.manifest, "w") as f:
+        with open(args.manifest, "w", encoding="utf-8") as f:
             json.dump(found, f, indent=2, ensure_ascii=False)
         print(f"\nWrote {len(found)}/{len(targets)} target submission ids -> {args.manifest}")
         missing = set(targets) - set(found)
@@ -157,7 +164,7 @@ def main():
             print(f"NOT FOUND (try more hops or larger breadth_cap): {missing}")
 
     if args.fetch:
-        with open(args.manifest) as f:
+        with open(args.manifest, encoding="utf-8") as f:
             manifest = json.load(f)
         fetch_replays(manifest, args.out, per_player=args.per_player)
 

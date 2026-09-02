@@ -1,7 +1,7 @@
-"""Generate Aether's compact fixed-route library from a public Kaggle replay.
+"""Generate Aether's compact fixed-route library from public Kaggle replays.
 
 The generated module is committed so the runtime never needs replay files.
-Run this tool again after refreshing ``top-players-data/final-research``.
+Run this tool again after refreshing ``top-players-data/refreshed-consistent``.
 """
 
 from __future__ import annotations
@@ -10,35 +10,40 @@ import argparse
 import json
 import os
 
-from tools.route_mining import encode_actions, load_player_games
+from tools.route_mining import encode_actions, load_player_games, majority_vote_route
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CORPUS = os.path.join(ROOT, "top-players-data", "final-research")
+CORPUS = os.path.join(ROOT, "top-players-data", "refreshed-consistent")
 
 
-def _episode_actions(team: str, episode_id: int, seat: int) -> list[dict]:
+def _consensus_actions(team: str, seat: int) -> tuple[list[dict], dict]:
     directory = os.path.join(CORPUS, team)
     games = load_player_games(directory)[seat]
-    for game in games:
-        if int(game["episode_id"]) == episode_id:
-            return game["actions"]
-    raise ValueError(f"missing {team} episode {episode_id} seat {seat}")
+    route, consistency, breakdown = majority_vote_route(games)
+    if route is None:
+        raise ValueError(f"need at least two {team} replays in seat {seat}")
+    return route, {**breakdown, "overall_consistency": consistency}
 
 
 def build_source() -> str:
-    routes = {
-        "TETSUYA_EP104492175_P0": _episode_actions("tetsuya", 104492175, 0),
-        "TETSUYA_EP104466724_P1": _episode_actions("tetsuya", 104466724, 1),
-    }
+    p0, p0_meta = _consensus_actions("MtN", 0)
+    p1, p1_meta = _consensus_actions("MtN", 1)
+    routes = {"MTN_REFRESHED_P0": p0, "MTN_REFRESHED_P1": p1}
 
     encoded = {name: encode_actions(actions) for name, actions in routes.items()}
     metadata = {
-        "seat0_source": "tetsuya episode 104492175 player 0",
-        "seat1_source": "tetsuya episode 104466724 player 1",
+        "team": "MtN",
+        "submission_id": 55947910,
+        "seat0_source": "majority of refreshed MtN seat-0 public replays",
+        "seat1_source": "majority of refreshed MtN seat-1 public replays",
+        "seat0_consistency": p0_meta["overall_consistency"],
+        "seat1_consistency": p1_meta["overall_consistency"],
+        "seat0_episodes": p0_meta["episode_ids"],
+        "seat1_episodes": p1_meta["episode_ids"],
         "steps": 719,
-        "selection": "each route went 30-4-2 over 36 fresh exact-seed top-three replay cases",
-        "execution": "exact seat-matched routes; no runtime branches",
+        "selection": "refreshed current-ladder consensus by seat",
+        "execution": "fixed seat-matched consensus routes; no runtime branches",
     }
     lines = [
         '"""Generated compact public-replay routes for Aether 1.0."""',

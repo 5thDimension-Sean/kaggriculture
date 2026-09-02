@@ -1,10 +1,9 @@
-"""Aether 1.0 — current rank-one fixed route matched to each seat.
+"""Aether 1.0 — refreshed consistent-ladder routes matched to each seat.
 
-Seat 0 replays tetsuya's public episode 104492175 seat-0 route; seat 1 replays
-episode 104466724's seat-1 route.  Matching the route to market resolution
-order fixes the live 9-12 versus 19-6 seat split while retaining fixed paths.
-No opponent identity, hidden state, heuristic branch, or recovery delay can
-move either seat away from its route.
+Both seats replay the current MtN submission's public majority route. Its
+refreshed seat-0 traces are 98.9% consistent and its seat-1 majority remains
+the strongest tested fixed counterpart. No opponent identity, hidden state,
+heuristic branch, or recovery delay can move either seat away from its route.
 """
 
 from __future__ import annotations
@@ -20,11 +19,11 @@ if "__file__" in globals():
 import aether_routes
 
 
-__version__ = "aether-1.0-tetsuya-seat-matched"
+__version__ = "aether-1.0-mtn-refreshed-consensus"
 
 _ROUTES = (
-    aether_routes.TETSUYA_EP104492175_P0,
-    aether_routes.TETSUYA_EP104466724_P1,
+    aether_routes.MTN_REFRESHED_P0,
+    aether_routes.MTN_REFRESHED_P1,
 )
 
 
