@@ -1,9 +1,8 @@
 """Aether 1.0 — current rank-one fixed route matched to each seat.
 
-Seat 0 replays tetsuya's public episode 104642360 seat-0 route; seat 1 replays
-episode 104648311's seat-1 route.  Each is the action-channel medoid of the
-current #1 player's newest 15 replays in that seat and won against #2 Crop
-Dusta. Matching the route to market resolution order retains fixed paths.
+Seat 0 replays tetsuya's public episode 104492175 seat-0 route; seat 1 replays
+episode 104466724's seat-1 route.  Matching the route to market resolution
+order fixes the live 9-12 versus 19-6 seat split while retaining fixed paths.
 No opponent identity, hidden state, heuristic branch, or recovery delay can
 move either seat away from its route.
 """
@@ -24,8 +23,8 @@ import aether_routes
 __version__ = "aether-1.0-tetsuya-seat-matched"
 
 _ROUTES = (
-    aether_routes.TETSUYA_MEDOID_P0,
-    aether_routes.TETSUYA_MEDOID_P1,
+    aether_routes.TETSUYA_EP104492175_P0,
+    aether_routes.TETSUYA_EP104466724_P1,
 )
 
 

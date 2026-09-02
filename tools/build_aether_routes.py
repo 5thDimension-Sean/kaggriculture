@@ -1,7 +1,7 @@
 """Generate Aether's compact fixed-route library from a public Kaggle replay.
 
 The generated module is committed so the runtime never needs replay files.
-Run this tool again after refreshing ``top-players-data/number1-audit``.
+Run this tool again after refreshing ``top-players-data/final-research``.
 """
 
 from __future__ import annotations
@@ -14,53 +14,30 @@ from tools.route_mining import encode_actions, load_player_games
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CORPUS = os.path.join(ROOT, "top-players-data", "number1-audit")
+CORPUS = os.path.join(ROOT, "top-players-data", "final-research")
 
 
-def _route_distance(left: list[dict], right: list[dict]) -> int:
-    """Action-channel Hamming distance used by the public route audits."""
-    steps = min(len(left), len(right))
-    return sum(
-        left[step][channel] != right[step][channel]
-        for step in range(steps)
-        for channel in ("farmer", "hands", "market")
-    ) + 3 * abs(len(left) - len(right))
-
-
-def _seat_medoid(team: str, seat: int) -> tuple[list[dict], int, int, int]:
-    games = load_player_games(os.path.join(CORPUS, team))[seat]
-    if not games:
-        raise ValueError(f"no {team} seat-{seat} games in {CORPUS}")
-    ranked = []
-    for candidate in games:
-        distance = sum(
-            _route_distance(candidate["actions"], other["actions"])
-            for other in games
-            if other is not candidate
-        )
-        ranked.append((distance, int(candidate["episode_id"]), candidate["actions"]))
-    distance, episode_id, actions = min(ranked, key=lambda row: (row[0], row[1]))
-    return actions, episode_id, distance, len(games)
+def _episode_actions(team: str, episode_id: int, seat: int) -> list[dict]:
+    directory = os.path.join(CORPUS, team)
+    games = load_player_games(directory)[seat]
+    for game in games:
+        if int(game["episode_id"]) == episode_id:
+            return game["actions"]
+    raise ValueError(f"missing {team} episode {episode_id} seat {seat}")
 
 
 def build_source() -> str:
-    p0, p0_episode, p0_distance, p0_games = _seat_medoid("tetsuya", 0)
-    p1, p1_episode, p1_distance, p1_games = _seat_medoid("tetsuya", 1)
     routes = {
-        "TETSUYA_MEDOID_P0": p0,
-        "TETSUYA_MEDOID_P1": p1,
+        "TETSUYA_EP104492175_P0": _episode_actions("tetsuya", 104492175, 0),
+        "TETSUYA_EP104466724_P1": _episode_actions("tetsuya", 104466724, 1),
     }
 
     encoded = {name: encode_actions(actions) for name, actions in routes.items()}
     metadata = {
-        "seat0_source": f"tetsuya episode {p0_episode} player 0",
-        "seat1_source": f"tetsuya episode {p1_episode} player 1",
-        "seat0_medoid_distance": p0_distance,
-        "seat1_medoid_distance": p1_distance,
-        "seat0_games": p0_games,
-        "seat1_games": p1_games,
+        "seat0_source": "tetsuya episode 104492175 player 0",
+        "seat1_source": "tetsuya episode 104466724 player 1",
         "steps": 719,
-        "selection": "minimum total action-channel Hamming distance among 15 newest replays in each seat",
+        "selection": "each route went 30-4-2 over 36 fresh exact-seed top-three replay cases",
         "execution": "exact seat-matched routes; no runtime branches",
     }
     lines = [
