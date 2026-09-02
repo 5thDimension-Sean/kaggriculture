@@ -27,6 +27,13 @@ def main() -> None:
     parser.add_argument("--candidates", required=True)
     parser.add_argument("--player-dir", required=True)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--seat",
+        type=int,
+        choices=(0, 1),
+        default=None,
+        help="Only replay games where the replaced submission occupied this seat.",
+    )
     parser.add_argument("--workers", type=int, default=max(1, mp.cpu_count() - 2))
     args = parser.parse_args()
 
@@ -47,6 +54,8 @@ def main() -> None:
             continue
         rated_manifest.append(entry)
     manifest = rated_manifest
+    if args.seat is not None:
+        manifest = [entry for entry in manifest if int(entry["seat"]) == args.seat]
     if args.limit:
         manifest = manifest[: args.limit]
     tasks = []
@@ -69,6 +78,8 @@ def main() -> None:
         print(f"{os.path.basename(candidate)}: {wins}-{losses}-{ties}, mean {mean:+,.0f}")
         for seat in (0, 1):
             deltas = [delta for row_seat, delta in rows if row_seat == seat]
+            if not deltas:
+                continue
             print(
                 f"  seat {seat}: {sum(d > 0 for d in deltas)}-"
                 f"{sum(d < 0 for d in deltas)}-{sum(d == 0 for d in deltas)}, "

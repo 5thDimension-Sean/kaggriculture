@@ -3,12 +3,32 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 from pathlib import Path
+import zlib
 
 
-def _payload(path: Path) -> tuple[str, dict]:
+def _payload(path: Path, seat: int) -> tuple[str, dict]:
     data = json.loads(path.read_text(encoding="utf-8"))
+    if "steps" in data:
+        actions = []
+        for row in data["steps"]:
+            raw = row[seat].get("action") or {}
+            actions.append({
+                "farmer": list(raw.get("farmer") or ["PASS"]),
+                "hands": [list(op or ["PASS"]) for op in (raw.get("hands") or [])],
+                "market": [list(order) for order in (raw.get("market") or [])],
+            })
+        if actions and actions[0] == {"farmer": ["PASS"], "hands": [], "market": []}:
+            actions = actions[1:]
+        encoded = base64.b85encode(zlib.compress(
+            json.dumps(actions, separators=(",", ":")).encode("utf-8"), 9
+        )).decode("ascii")
+        return encoded, {
+            "episode": data.get("info", {}).get("EpisodeId", path.name),
+            "seat": seat,
+        }
     return data["encoded"], {
         "consistency": data.get("consistency"),
         "games": data.get("n_games"),
@@ -17,9 +37,9 @@ def _payload(path: Path) -> tuple[str, dict]:
 
 
 def build_source(p0_path: Path, p1_path: Path, version: str) -> str:
-    p0, p0_meta = _payload(p0_path)
-    p1, p1_meta = _payload(p1_path)
-    return f'''"""Seat-matched consensus routes reconstructed from public replays."""
+    p0, p0_meta = _payload(p0_path, 0)
+    p1, p1_meta = _payload(p1_path, 1)
+    return f'''"""Seat-matched routes reconstructed from public replays."""
 import base64
 import copy
 import json

@@ -1,9 +1,9 @@
-"""Aether 1.0 — refreshed consistent-ladder routes matched to each seat.
+"""Aether 1.0 — coherent top-ladder routes matched to each seat.
 
-Both seats replay the current MtN submission's public majority route. Its
-refreshed seat-0 traces are 98.9% consistent and its seat-1 majority remains
-the strongest tested fixed counterpart. No opponent identity, hidden state,
-heuristic branch, or recovery delay can move either seat away from its route.
+Seat 0 replays one complete RngRng route and seat 1 one complete MtN route.
+Keeping each observed episode intact avoids the impossible sequences created
+by per-turn majority splicing. No opponent identity, hidden state, heuristic
+branch, or recovery delay can move either seat away from its route.
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ if "__file__" in globals():
 import aether_routes
 
 
-__version__ = "aether-1.0-mtn-refreshed-consensus"
+__version__ = "aether-1.0-rngrng-mtn-coherent"
 
 _ROUTES = (
-    aether_routes.MTN_REFRESHED_P0,
-    aether_routes.MTN_REFRESHED_P1,
+    aether_routes.RNGRNG_P0,
+    aether_routes.MTN_P1,
 )
 
 

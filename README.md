@@ -1,23 +1,20 @@
 # Aether 1.0
 
 Aether is a full rewrite of the Kaggriculture agent around public replay
-behavior from the current leaderboard leaders: tetsuya, Driz Lo, and MtN.
+behavior from current leaderboard leaders.
 It does not identify players or use hidden state.
 
 ## Policy
 
-- Both seats use a per-action majority reconstruction of MtN's four public
-  seat-1 games. That logistics route measured 99.2% self-consistency and
-  transfers directly because farm coordinates are player-local.
+- Seat 0 copies RngRng public episode 104686146 exactly; seat 1 copies MtN
+  public episode 104683334 exactly. Each 719-step route is kept whole.
 - Workers follow the seat-1 rule of thumb: establish five specialized hands,
   keep animal care and crop watering continuous, and synchronize pickup,
   placement, harvest, and market replenishment instead of making isolated
   greedy moves.
-- Seat 0 copies the seat-1 tape exactly: no direction transform, crop fork,
-  market reordering, or quantity change, and no runtime deviation of any
-  kind. The action for a given step depends only on `step`, never on either
-  seat's own farm/tile state, so both seats issue byte-identical actions on
-  every step of every episode.
+- Per-turn majority voting was removed after it produced combinations that no
+  source player executed. The action for a given seat and step depends only
+  on `seat` and `step`, never on farm/tile state or opponent identity.
 - Market order positions are a cash-flow invariant: sales, purchases, and
   hires stay in their demonstrated slots because an early sale may finance a
   later action in the same turn.

@@ -12,9 +12,9 @@ REFERENCE_67 = os.path.join(PROJECT_ROOT, "opponents", "mapleleaf_6_7.py")
 
 class AgentTests(unittest.TestCase):
     def test_version_is_aether_1(self):
-        self.assertEqual(main.__version__, "aether-1.0-mtn-refreshed-consensus")
+        self.assertEqual(main.__version__, "aether-1.0-rngrng-mtn-coherent")
 
-    def test_both_seats_use_mtn_fixed_consensus_route(self):
+    def test_both_seats_use_fixed_coherent_routes(self):
         for player in (0, 1):
             observation = {
                 "player": player,

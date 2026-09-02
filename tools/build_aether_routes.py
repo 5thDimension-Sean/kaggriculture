@@ -1,49 +1,55 @@
 """Generate Aether's compact fixed-route library from public Kaggle replays.
 
 The generated module is committed so the runtime never needs replay files.
-Run this tool again after refreshing ``top-players-data/refreshed-consistent``.
+Each seat is copied from one complete observed episode; actions are never
+spliced across games.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 
-from tools.route_mining import encode_actions, load_player_games, majority_vote_route
+from tools.route_mining import encode_actions, load_player_games
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CORPUS = os.path.join(ROOT, "top-players-data", "refreshed-consistent")
+CONSISTENT_CORPUS = os.path.join(ROOT, "top-players-data", "refreshed-consistent")
+CLIMBER_CORPUS = os.path.join(ROOT, "top-players-data", "refreshed-climbers")
+SEAT0_EPISODE = 104686146
+SEAT1_EPISODE = 104683334
 
 
-def _consensus_actions(team: str, seat: int) -> tuple[list[dict], dict]:
-    directory = os.path.join(CORPUS, team)
+def _episode_actions(directory: str, seat: int, episode_id: int) -> list[dict]:
     games = load_player_games(directory)[seat]
-    route, consistency, breakdown = majority_vote_route(games)
-    if route is None:
-        raise ValueError(f"need at least two {team} replays in seat {seat}")
-    return route, {**breakdown, "overall_consistency": consistency}
+    for game in games:
+        if int(game["episode_id"]) == episode_id:
+            return game["actions"]
+    raise ValueError(f"episode {episode_id} was not found in {directory} seat {seat}")
 
 
 def build_source() -> str:
-    p0, p0_meta = _consensus_actions("MtN", 0)
-    p1, p1_meta = _consensus_actions("MtN", 1)
-    routes = {"MTN_REFRESHED_P0": p0, "MTN_REFRESHED_P1": p1}
+    p0 = _episode_actions(
+        os.path.join(CLIMBER_CORPUS, "RngRng"), 0, SEAT0_EPISODE
+    )
+    p1 = _episode_actions(
+        os.path.join(CONSISTENT_CORPUS, "MtN"), 1, SEAT1_EPISODE
+    )
+    routes = {"RNGRNG_P0": p0, "MTN_P1": p1}
 
     encoded = {name: encode_actions(actions) for name, actions in routes.items()}
     metadata = {
-        "team": "MtN",
-        "submission_id": 55947910,
-        "seat0_source": "majority of refreshed MtN seat-0 public replays",
-        "seat1_source": "majority of refreshed MtN seat-1 public replays",
-        "seat0_consistency": p0_meta["overall_consistency"],
-        "seat1_consistency": p1_meta["overall_consistency"],
-        "seat0_episodes": p0_meta["episode_ids"],
-        "seat1_episodes": p1_meta["episode_ids"],
+        "seat0_team": "RngRng",
+        "seat1_team": "MtN",
+        "seat0_submission_id": 55948382,
+        "seat1_submission_id": 55947910,
+        "seat0_source": f"exact RngRng public episode {SEAT0_EPISODE}, seat 0",
+        "seat1_source": f"exact MtN public episode {SEAT1_EPISODE}, seat 1",
+        "seat0_episode": SEAT0_EPISODE,
+        "seat1_episode": SEAT1_EPISODE,
         "steps": 719,
-        "selection": "refreshed current-ladder consensus by seat",
-        "execution": "fixed seat-matched consensus routes; no runtime branches",
+        "selection": "coherent whole-route selection by seat",
+        "execution": "fixed exact episode routes; no runtime branches or voting",
     }
     lines = [
         '"""Generated compact public-replay routes for Aether 1.0."""',

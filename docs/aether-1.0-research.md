@@ -1,5 +1,20 @@
 # Aether 1.0 replay research
 
+## Coherent route promotion (2026-09-02)
+
+The refreshed MtN majority-vote build reached only 66-54 in its first 120
+rated games and was particularly weak from seat 0. Majority voting preserved
+common individual actions but spliced them into a sequence that MtN never
+executed as a complete game.
+
+A seat-specific sweep of complete current-leader episodes selected RngRng
+episode 104686146 for seat 0 and MtN episode 104683334 for seat 1. The exact
+pair beat the submitted MtN consensus 88-12 on 100 disjoint paired-seat games
+(seat 0: 49-1; seat 1: 39-11), and scored 21-9 when substituted into the 30
+newest rated replay matchups. Control results were 38-2 versus MapleLeaf 6.7,
+38-2 versus legacy 6.3, and 37-3 versus submission v7.1. These are local
+benchmarks, not a guarantee of leaderboard performance.
+
 Research date: 2026-08-31. Source: ten latest public replays for each of
 tetsuya, Driz Lo, and MtN, downloaded from their live Kaggriculture
 submissions.
