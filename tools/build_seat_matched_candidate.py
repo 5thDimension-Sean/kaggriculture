@@ -31,8 +31,11 @@ def _payload(path: Path, seat: int) -> tuple[str, dict]:
         }
     return data["encoded"], {
         "consistency": data.get("consistency"),
-        "games": data.get("n_games"),
-        "episodes": data.get("episode_ids"),
+        "games": data.get("n_games", data.get("support")),
+        "episodes": data.get("episode_ids", data.get("episodes")),
+        "route_id": data.get("route_id"),
+        "fingerprint": data.get("fingerprint"),
+        "plausible": data.get("plausible"),
     }
 
 

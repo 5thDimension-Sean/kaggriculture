@@ -36,6 +36,7 @@ The evidence and limitations are in
 - `aether_routes.py` — generated, compressed route library
 - `tools/build_aether_routes.py` — reproducible route generator
 - `tools/analyze_top_routes.py` — route divergence and threshold analysis
+- `tools/route_tree.py` — coherent route trie, branch support, and candidate export
 - `tools/build_submission.py` — single-file package builder and loader test
 - `tests/` — branch, loader, and full-episode regression tests
 
@@ -50,3 +51,23 @@ tar -czf artifacts/aether-1.0.tar.gz -C artifacts/submission main.py
 
 The Kaggle artifact contains one root-level `main.py` and uses only Python's
 standard library at runtime.
+
+## Discover coherent route families
+
+Build a path-compressed route tree from a player's replay directory:
+
+```powershell
+py -m tools.route_tree `
+  --dir "top-players-data\refreshed-climbers\RngRng" `
+  --seat both `
+  --out "artifacts\route-trees\RngRng.json" `
+  --tree-out "artifacts\route-trees\RngRng.txt" `
+  --emit-routes "artifacts\route-trees\RngRng-routes"
+```
+
+The first manifest route is the parent path. A different complete action at
+any step creates another child, and single-child spans are compressed. Every
+leaf and emitted payload is an exact observed route; branches are never mixed
+to manufacture a route. `plausible` is a conservative replay-evidence filter
+for deciding what to benchmark next, not permission to promote a route without
+fresh paired-seat tests.
